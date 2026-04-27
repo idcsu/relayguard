@@ -201,7 +201,35 @@ menu(){
 
   case "$n" in
     1) install_panel;;
-    2) need_root; download_bin; systemctl restart ${SERVICE}; green "更新完成";;
+    2)
+      need_root
+      install_deps
+      tmp="/tmp/${APP}.new"
+      backup="${BIN_DIR}/${APP}.bak.$(date +%Y%m%d-%H%M%S)"
+      rm -f "$tmp"
+      arch=$(arch_name)
+      url="https://github.com/${REPO}/releases/latest/download/relayguard-panel-linux-${arch}"
+      yellow "正在下载：$url"
+      curl -fL "$url" -o "$tmp"
+      chmod +x "$tmp"
+
+      yellow "正在停止面板服务..."
+      systemctl stop ${SERVICE} 2>/dev/null || true
+      sleep 1
+      pkill -f "${BIN_DIR}/${APP}" 2>/dev/null || true
+      sleep 1
+
+      if [ -f "${BIN_DIR}/${APP}" ]; then
+        cp -f "${BIN_DIR}/${APP}" "$backup"
+        yellow "旧版本已备份：$backup"
+      fi
+
+      mv -f "$tmp" "${BIN_DIR}/${APP}"
+      chmod +x "${BIN_DIR}/${APP}"
+      systemctl start ${SERVICE}
+      green "更新完成"
+      "${BIN_DIR}/${APP}" -version || true
+      ;;
     3) uninstall_panel;;
     4) systemctl status ${SERVICE} --no-pager;;
     5) journalctl -u ${SERVICE} -f;;
