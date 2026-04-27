@@ -5,7 +5,7 @@ echo "正在检查前端安全引用..."
 
 FOUND=0
 
-URL_TARGETS=(
+TARGETS=(
   "frontend/src"
   "frontend/index.html"
   "frontend/vite.config.ts"
@@ -15,16 +15,13 @@ URL_TARGETS=(
   "internal/panel/webdist"
 )
 
-DIALOG_TARGETS=(
-  "frontend/src"
-  "web/dist"
-  "internal/panel/webdist"
-)
-
-for target in "${URL_TARGETS[@]}"; do
+# 禁止常见 CDN / 远程字体 / 第三方统计脚本。
+# 不再禁止所有 https://，避免 React/Vite 生产包里的文档链接误报。
+for target in "${TARGETS[@]}"; do
   [ -e "$target" ] || continue
+
   if grep -RInE \
-    "https?://|cdn\.|unpkg\.com|jsdelivr\.net|googleapis\.com|gstatic\.com" \
+    "cdn\.|unpkg\.com|jsdelivr\.net|cdnjs\.cloudflare\.com|googleapis\.com|gstatic\.com|googletagmanager\.com|google-analytics\.com|analytics\.|plausible\.io|umami\.is" \
     "$target" \
     --exclude-dir=node_modules \
     --exclude-dir=.vite \
@@ -33,18 +30,21 @@ for target in "${URL_TARGETS[@]}"; do
   fi
 done
 
-# package-lock 允许 registry.npmjs.org，但不允许 CDN / 远程字体。
-if [ -f frontend/package-lock.json ]; then
+# 检查最终 HTML 是否引用远程脚本、样式、图片、字体。
+for html in web/dist/index.html internal/panel/webdist/index.html frontend/index.html; do
+  [ -f "$html" ] || continue
+
   if grep -nE \
-    "unpkg\.com|jsdelivr\.net|googleapis\.com|gstatic\.com|cdn\." \
-    frontend/package-lock.json; then
+    '<script[^>]+src=["'\'']https?://|<link[^>]+href=["'\'']https?://|<img[^>]+src=["'\'']https?://|@import[[:space:]]+url\(["'\'']?https?://' \
+    "$html"; then
     FOUND=1
   fi
-fi
+done
 
-# 禁止浏览器原生弹窗。自定义 confirmModal/confirm 函数不算浏览器原生 API。
-for target in "${DIALOG_TARGETS[@]}"; do
+# 禁止浏览器原生弹窗。允许 React 组件里自定义命名的 confirm 函数。
+for target in "frontend/src" "web/dist" "internal/panel/webdist"; do
   [ -e "$target" ] || continue
+
   if grep -RInE \
     "window\.(alert|prompt|confirm)[[:space:]]*\(|globalThis\.(alert|prompt|confirm)[[:space:]]*\(|(^|[^A-Za-z0-9_$])(alert|prompt)[[:space:]]*\(" \
     "$target" \
