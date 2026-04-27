@@ -10,3 +10,31 @@
 @media(max-width:1120px){.cards{grid-template-columns:repeat(2,1fr)}.toolbar4{grid-template-columns:1fr 1fr}.detail-grid,.tips{grid-template-columns:1fr}.hero{align-items:flex-start;flex-direction:column}}
 @media(max-width:960px){.layout{grid-template-columns:1fr}.sidebar{position:relative;height:auto}.main{padding:18px}.grid2,.grid3,.toolbar{grid-template-columns:1fr}.topbar{align-items:flex-start;flex-direction:column}.top-actions{width:100%;justify-content:space-between}.table{font-size:13px;display:block;overflow-x:auto}.cards{grid-template-columns:1fr}.modal{border-radius:22px}.drawer{width:100%;border-radius:0}.refresh-note{display:none}}
 @media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+
+
+.token-result {
+  margin-top: 18px;
+  display: grid;
+  gap: 14px;
+}
+.result-card {
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  padding: 14px;
+  background: rgba(255,255,255,.72);
+  box-shadow: var(--shadow-sm);
+}
+.result-title {
+  font-weight: 800;
+  margin-bottom: 10px;
+  color: var(--text);
+}
+.result-card textarea {
+  min-height: 88px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  resize: vertical;
+}
+.full {
+  grid-column: 1 / -1;
+}
+
