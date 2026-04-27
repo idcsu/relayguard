@@ -55,10 +55,52 @@ function statusBadge(st) {
 function nodeBadge(n) { return online(n) ? badge('ok','在线') : badge('off','离线'); }
 function firewallText(n) {
   const mode = n.firewall_mode || 'loose';
-  const stateText = ({ off:'未托管', loose:'宽松托管', strict:'严格托管', 'strict-pending':'严格待确认', rollback:'已回滚', unsupported:'不支持', error:'异常' }[n.firewall_state || mode]) || (n.firewall_state || mode);
-  const cls = (n.firewall_state === 'error' || n.firewall_error) ? 'err' : (mode === 'strict' ? 'ok' : (mode === 'strict-pending' ? 'warn' : 'off'));
-  return badge(cls, stateText);
+  const runtime = n.firewall_state || '';
+
+  let text = '宽松托管';
+  let cls = 'off';
+
+  if (mode === 'off') {
+    text = '未托管';
+    cls = 'off';
+  } else if (mode === 'loose') {
+    text = runtime === 'unsupported' ? '不支持' : '宽松托管';
+    cls = runtime === 'unsupported' ? 'warn' : 'off';
+  } else if (mode === 'strict-pending') {
+    text = '严格待确认';
+    cls = 'warn';
+  } else if (mode === 'strict') {
+    if (runtime === 'strict-pending') {
+      text = '严格确认中';
+      cls = 'warn';
+    } else if (runtime === 'rollback') {
+      text = '已自动回滚';
+      cls = 'warn';
+    } else if (runtime === 'unsupported') {
+      text = '不支持';
+      cls = 'warn';
+    } else if (runtime === 'error') {
+      text = '异常';
+      cls = 'err';
+    } else {
+      text = '严格托管';
+      cls = 'ok';
+    }
+  } else if (runtime === 'rollback') {
+    text = '已自动回滚';
+    cls = 'warn';
+  } else if (runtime === 'error') {
+    text = '异常';
+    cls = 'err';
+  } else if (runtime === 'unsupported') {
+    text = '不支持';
+    cls = 'warn';
+  }
+
+  if (n.firewall_error) cls = 'err';
+  return badge(cls, text);
 }
+
 function toast(msg) {
   const old = $('.toast'); if (old) old.remove();
   const t = document.createElement('div'); t.className = 'toast'; t.textContent = msg;
@@ -194,14 +236,79 @@ function tokensPage() {
   return `<div class="section card"><div class="section-head"><h2>节点接入</h2><button class="btn primary" data-action="create-token">生成接入 Token</button></div><p class="muted">生成 Token 后，在转发节点服务器上执行安装命令。Token 默认 24 小时内有效且只能使用一次。</p><p class="muted">Agent 安装脚本会自动识别当前 SSH 端口，并在严格防火墙模式下保留该端口。救援命令：<code>relayguard-agent firewall rescue</code></p><div id="tokenBox"></div></div>`;
 }
 async function createToken() {
-  try {
-    const name = prompt('节点名称', '新转发节点') || '新转发节点';
-    const d = await api('/api/node-tokens', { method:'POST', body: JSON.stringify({ name, hours: 24 }) });
-    const origin = location.origin;
-    const cmd = `curl -fsSL ${origin}/api/agent/install.sh | bash -s -- --panel ${origin} --token ${d.item.plain_token}`;
-    $('#tokenBox').innerHTML = `<div class="field"><label>一次性 Token</label><div class="codebox">${esc(d.item.plain_token)}</div></div><div class="field"><label>节点安装命令</label><div class="codebox">${esc(cmd)}</div></div>`;
-    toast('Token 已生成，仅显示一次');
-  } catch (e) { toast(e.message); }
+  modal(`
+    <div class="modal-head">
+      <div>
+        <h2>生成节点接入 Token</h2>
+        <p>生成后只显示一次，请立即复制到节点服务器执行。</p>
+      </div>
+      <button class="ghost" data-action="close-modal">关闭</button>
+    </div>
+
+    <form id="tokenForm" class="form-grid">
+      <label>节点名称
+        <input name="name" value="新转发节点" placeholder="例如：香港-01 / 洛杉矶-01" required>
+      </label>
+
+      <label>有效期
+        <select name="hours">
+          <option value="1">1 小时</option>
+          <option value="6">6 小时</option>
+          <option value="24" selected>24 小时</option>
+          <option value="72">3 天</option>
+          <option value="168">7 天</option>
+        </select>
+      </label>
+
+      <div class="hint full">
+        Token 只能使用一次。Agent 注册成功后会改用节点密钥进行签名心跳。
+      </div>
+
+      <div class="actions full">
+        <button type="submit">生成 Token</button>
+        <button type="button" class="ghost" data-action="close-modal">取消</button>
+      </div>
+    </form>
+
+    <div id="tokenResult" class="token-result"></div>
+  `);
+
+  $('#tokenForm')?.addEventListener('submit', async e => {
+    e.preventDefault();
+    const fd = Object.fromEntries(new FormData(e.target));
+    const name = (fd.name || '新转发节点').trim();
+    const hours = Number(fd.hours || 24);
+
+    try {
+      const d = await api('/api/node-tokens', {
+        method: 'POST',
+        body: JSON.stringify({ name, hours })
+      });
+
+      const origin = location.origin;
+      const token = d.item.plain_token;
+      const cmd = `curl -fsSL ${origin}/api/agent/install.sh | bash -s -- --panel ${origin} --token ${token}`;
+
+      $('#tokenResult').innerHTML = `
+        <div class="result-card">
+          <div class="result-title">一次性 Token</div>
+          <textarea readonly onclick="this.select()">${esc(token)}</textarea>
+        </div>
+
+        <div class="result-card">
+          <div class="result-title">节点安装命令</div>
+          <textarea readonly onclick="this.select()">${esc(cmd)}</textarea>
+        </div>
+
+        <div class="hint">点击文本框即可全选。Token 只显示一次，请妥善保存。</div>
+      `;
+
+      toast('Token 已生成');
+      await refreshAll();
+    } catch (err) {
+      toast(err.message);
+    }
+  });
 }
 
 function usersPage() {
