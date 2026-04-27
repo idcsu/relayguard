@@ -1,0 +1,14 @@
+FROM golang:1.22-alpine AS builder
+RUN apk add --no-cache build-base sqlite-dev
+WORKDIR /src
+COPY . .
+RUN go build -trimpath -ldflags="-s -w" -o /out/relayguard-panel ./cmd/relayguard-panel
+
+FROM alpine:3.20
+RUN apk add --no-cache ca-certificates tzdata sqlite-libs && adduser -D -H -s /sbin/nologin relayguard
+WORKDIR /app
+COPY --from=builder /out/relayguard-panel /usr/local/bin/relayguard-panel
+USER relayguard
+EXPOSE 7080
+ENTRYPOINT ["/usr/local/bin/relayguard-panel"]
+CMD ["-addr", ":7080", "-data", "/app/data"]

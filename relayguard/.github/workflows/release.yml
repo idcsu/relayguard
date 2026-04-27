@@ -1,0 +1,36 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev gcc
+      - name: Build binaries
+        run: |
+          mkdir -p dist
+          CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o dist/relayguard-panel-linux-amd64 ./cmd/relayguard-panel
+          for arch in amd64 arm64; do
+            CGO_ENABLED=0 GOOS=linux GOARCH=$arch go build -trimpath -ldflags="-s -w" -o dist/relayguard-agent-linux-$arch ./cmd/relayguard-agent
+          done
+          cd dist && sha256sum * > SHA256SUMS
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/relayguard-panel-linux-amd64
+            dist/relayguard-agent-linux-amd64
+            dist/relayguard-agent-linux-arm64
+            dist/SHA256SUMS

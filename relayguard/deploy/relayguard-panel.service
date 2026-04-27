@@ -1,0 +1,16 @@
+[Unit]
+Description=RelayGuard 中转卫士面板
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/relayguard-panel -addr :7080 -data /etc/relayguard
+Restart=always
+RestartSec=3
+LimitNOFILE=1048576
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
