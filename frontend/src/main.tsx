@@ -211,23 +211,165 @@ function LoginPage({ onLogin, toast }: { onLogin: (u: User, v?: string) => void;
   </div>;
 }
 
-function Dashboard({ nodes, rules, statusOf }: { nodes: NodeItem[]; rules: RuleItem[]; statusOf: (id: string) => RuleStatus }) {
-  const traffic = rules.reduce((s, r) => s + Number(r.traffic_used || 0), 0);
-  const running = rules.filter(r => statusOf(r.id).state === 'running').length;
-  const errors = rules.filter(r => statusOf(r.id).state === 'error').length;
-  return <div className="grid gap-6">
-    <div className="rounded-[2rem] bg-gradient-to-br from-slate-950 via-blue-950 to-indigo-900 p-8 text-white shadow-soft">
-      <div className="text-sm font-bold text-blue-200">RelayGuard Console</div>
-      <h2 className="mt-3 text-3xl font-black">运行状态一目了然</h2>
-      <p className="mt-2 max-w-2xl text-slate-300">集中管理节点、转发规则、流量和防火墙托管。所有前端资源均来自本地构建产物。</p>
+type TrendPoint = { ts: number; total: number };
+
+function useTrafficTrend(total: number) {
+  const [points, setPoints] = useState<TrendPoint[]>([]);
+
+  useEffect(() => {
+    const key = 'relayguard:traffic-trend:v1';
+    const now = Date.now();
+    let arr: TrendPoint[] = [];
+
+    try {
+      arr = JSON.parse(localStorage.getItem(key) || '[]');
+    } catch {
+      arr = [];
+    }
+
+    const cutoff = now - 24 * 60 * 60 * 1000;
+    arr = arr.filter(p => p && typeof p.ts === 'number' && typeof p.total === 'number' && p.ts >= cutoff);
+
+    const last = arr[arr.length - 1];
+    const changed = !last || Math.abs(Number(last.total || 0) - Number(total || 0)) >= 1024;
+    const stale = !last || now - last.ts >= 5 * 60 * 1000;
+
+    if (!last || changed || stale) {
+      arr.push({ ts: now, total: Number(total || 0) });
+    }
+
+    arr = arr.slice(-96);
+    localStorage.setItem(key, JSON.stringify(arr));
+    setPoints(arr);
+  }, [total]);
+
+  return points;
+}
+
+function TrafficTrend({ total, points }: { total: number; points: TrendPoint[] }) {
+  const width = 720;
+  const height = 220;
+  const padX = 28;
+  const padY = 24;
+  const values = points.length ? points.map(p => Number(p.total || 0)) : [Number(total || 0)];
+  const min = Math.min(...values);
+  const max = Math.max(...values, Number(total || 0));
+  const span = Math.max(1, max - min);
+  const safePoints = points.length ? points : [{ ts: Date.now(), total: Number(total || 0) }];
+
+  const coords = safePoints.map((p, i) => {
+    const x = safePoints.length <= 1 ? padX : padX + i * ((width - padX * 2) / (safePoints.length - 1));
+    const y = height - padY - ((Number(p.total || 0) - min) / span) * (height - padY * 2);
+    return { x, y };
+  });
+
+  const line = coords.map(p => `${p.x},${p.y}`).join(' ');
+  const area = coords.length
+    ? `${padX},${height - padY} ${line} ${width - padX},${height - padY}`
+    : '';
+
+  const first = safePoints[0]?.total || 0;
+  const delta = Math.max(0, Number(total || 0) - Number(first || 0));
+  const lastTime = safePoints[safePoints.length - 1]?.ts;
+
+  return <div className="card traffic-card p-5">
+    <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+      <div>
+        <h3 className="text-lg font-black text-slate-900">累计流量趋势</h3>
+        <p className="muted mt-1">基于浏览器本地采样的真实累计流量，不使用假数据。后续可升级为服务端持久化趋势。</p>
+      </div>
+      <div className="rounded-2xl bg-emerald-50 px-4 py-3 text-right">
+        <div className="text-xs font-bold text-emerald-700">本会话增量</div>
+        <div className="text-xl font-black text-emerald-800">{fmtBytes(delta)}</div>
+      </div>
     </div>
-    <div className="grid gap-4 md:grid-cols-4"><Stat title="在线节点" value={`${nodes.filter(online).length}/${nodes.length}`} /><Stat title="运行规则" value={`${running}/${rules.length}`} /><Stat title="累计流量" value={fmtBytes(traffic)} /><Stat title="异常规则" value={String(errors)} danger={errors > 0} /></div>
-    <div className="grid gap-4 lg:grid-cols-2">
-      <div className="card p-5"><h3 className="font-black">节点概览</h3><div className="mt-4 grid gap-3">{nodes.slice(0, 6).map(n => <div key={n.id} className="flex items-center justify-between rounded-2xl bg-slate-50 p-3"><div><b>{n.name}</b><div className="muted">{n.public_ip || '-'} · {n.os || '-'}</div></div><Badge tone={online(n) ? 'ok' : 'muted'}>{online(n) ? '在线' : '离线'}</Badge></div>)}</div></div>
-      <div className="card p-5"><h3 className="font-black">流量 Top 规则</h3><div className="mt-4 grid gap-3">{[...rules].sort((a,b)=>Number(b.traffic_used||0)-Number(a.traffic_used||0)).slice(0,6).map(r => <div key={r.id} className="rounded-2xl bg-slate-50 p-3"><div className="flex justify-between"><b>{r.name}</b><span>{fmtBytes(r.traffic_used)}</span></div><div className="mt-2 h-2 overflow-hidden rounded-full bg-slate-200"><i className="block h-full rounded-full bg-blue-500" style={{ width: `${Math.min(100, (Number(r.traffic_used || 0) / Math.max(1, Number(r.traffic_limit || r.traffic_used || 1))) * 100)}%` }} /></div></div>)}</div></div>
+
+    <div className="mt-5 overflow-hidden rounded-3xl border border-slate-200/70 bg-gradient-to-b from-white to-slate-50 p-3">
+      <svg viewBox={`0 0 ${width} ${height}`} className="h-56 w-full" role="img" aria-label="累计流量趋势图">
+        <defs>
+          <linearGradient id="trafficLine" x1="0" x2="1" y1="0" y2="0">
+            <stop offset="0%" stopColor="#0f766e" />
+            <stop offset="100%" stopColor="#2563eb" />
+          </linearGradient>
+          <linearGradient id="trafficArea" x1="0" x2="0" y1="0" y2="1">
+            <stop offset="0%" stopColor="#14b8a6" stopOpacity=".18" />
+            <stop offset="100%" stopColor="#2563eb" stopOpacity=".02" />
+          </linearGradient>
+        </defs>
+
+        {[0, 1, 2, 3].map(i => {
+          const y = padY + i * ((height - padY * 2) / 3);
+          return <line key={i} x1={padX} x2={width - padX} y1={y} y2={y} stroke="#e2e8f0" strokeDasharray="5 8" />;
+        })}
+
+        {coords.length > 1 && <polygon points={area} fill="url(#trafficArea)" />}
+        <polyline points={line} fill="none" stroke="url(#trafficLine)" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" />
+        {coords.map((p, i) => <circle key={i} cx={p.x} cy={p.y} r={i === coords.length - 1 ? 5 : 3} fill={i === coords.length - 1 ? '#0f766e' : '#94a3b8'} />)}
+      </svg>
+    </div>
+
+    <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500">
+      <span>采样点：{safePoints.length}</span>
+      <span>最近采样：{lastTime ? fmtDate(new Date(lastTime).toISOString()) : '-'}</span>
+      <span>当前累计：{fmtBytes(total)}</span>
     </div>
   </div>;
 }
+
+function Dashboard({ nodes, rules, statusOf }: { nodes: NodeItem[]; rules: RuleItem[]; statusOf: (id: string) => RuleStatus }) {
+  const traffic = rules.reduce((sum, rule) => sum + Number(rule.traffic_used || 0), 0);
+  const running = rules.filter(rule => statusOf(rule.id).state === 'running').length;
+  const errors = rules.filter(rule => statusOf(rule.id).state === 'error').length;
+  const trend = useTrafficTrend(traffic);
+
+  return <div className="grid gap-6">
+    <div className="hero-card rounded-[2rem] p-8 text-white shadow-soft">
+      <div className="text-sm font-bold text-teal-100">RelayGuard Console</div>
+      <h2 className="mt-3 text-3xl font-black">安全、清爽、可控的中转面板</h2>
+      <p className="mt-2 max-w-2xl text-slate-100/90">集中管理节点、转发规则、流量和防火墙托管。前端资源本地构建并内嵌到 Go 二进制，不使用 CDN。</p>
+    </div>
+
+    <div className="grid gap-4 md:grid-cols-4">
+      <Stat title="在线节点" value={`${nodes.filter(online).length}/${nodes.length}`} />
+      <Stat title="运行规则" value={`${running}/${rules.length}`} />
+      <Stat title="累计流量" value={fmtBytes(traffic)} />
+      <Stat title="异常规则" value={String(errors)} danger={errors > 0} />
+    </div>
+
+    <TrafficTrend total={traffic} points={trend} />
+
+    <div className="grid gap-4 lg:grid-cols-2">
+      <div className="card p-5">
+        <h3 className="font-black text-slate-900">节点概览</h3>
+        <div className="mt-4 grid gap-3">
+          {nodes.slice(0, 6).map(n => <div key={n.id} className="flex items-center justify-between rounded-2xl bg-slate-50/80 p-3">
+            <div>
+              <b>{n.name}</b>
+              <div className="muted">{n.public_ip || '-'} · {n.os || '-'}</div>
+            </div>
+            <Badge tone={online(n) ? 'ok' : 'muted'}>{online(n) ? '在线' : '离线'}</Badge>
+          </div>)}
+        </div>
+      </div>
+
+      <div className="card p-5">
+        <h3 className="font-black text-slate-900">流量 Top 规则</h3>
+        <div className="mt-4 grid gap-3">
+          {[...rules].sort((a, b) => Number(b.traffic_used || 0) - Number(a.traffic_used || 0)).slice(0, 6).map(r => <div key={r.id} className="rounded-2xl bg-slate-50/80 p-3">
+            <div className="flex justify-between gap-4">
+              <b className="truncate">{r.name}</b>
+              <span className="font-semibold text-slate-700">{fmtBytes(r.traffic_used)}</span>
+            </div>
+            <div className="mt-2 h-2 overflow-hidden rounded-full bg-slate-200">
+              <i className="block h-full rounded-full bg-gradient-to-r from-teal-500 to-blue-500" style={{ width: `${Math.min(100, (Number(r.traffic_used || 0) / Math.max(1, Number(r.traffic_limit || r.traffic_used || 1))) * 100)}%` }} />
+            </div>
+          </div>)}
+        </div>
+      </div>
+    </div>
+  </div>;
+}
+
 function Stat({ title, value, danger }: { title: string; value: string; danger?: boolean }) { return <div className="card p-5"><div className="muted">{title}</div><div className={cn('mt-2 text-3xl font-black', danger && 'text-rose-600')}>{value}</div></div>; }
 function Badge({ tone, children }: { tone: 'ok' | 'warn' | 'danger' | 'muted'; children: React.ReactNode }) { return <span className={cn('badge', tone === 'ok' && 'badge-ok', tone === 'warn' && 'badge-warn', tone === 'danger' && 'badge-danger', tone === 'muted' && 'badge-muted')}>{children}</span>; }
 
@@ -235,8 +377,104 @@ function NodesPage(props: { nodes: NodeItem[]; filters: any; setFilters: any; is
   return <div className="grid gap-5"><Toolbar><input className="input" placeholder="搜索节点 / IP / 系统" value={props.filters.q} onChange={e => props.setFilters((f: any)=>({ ...f, nodes: { ...f.nodes, q: e.target.value } }))} /><select className="input" value={props.filters.status} onChange={e => props.setFilters((f: any)=>({ ...f, nodes: { ...f.nodes, status: e.target.value } }))}><option value="all">全部状态</option><option value="online">在线</option><option value="offline">离线</option></select></Toolbar><div className="table-wrap"><table className="table"><thead><tr><th>节点</th><th>状态</th><th>防火墙</th><th>资源</th><th>端口范围</th><th>最近心跳</th><th>操作</th></tr></thead><tbody>{props.nodes.map(n => { const fw = firewallStatus(n); const m = n.last_metrics || {}; return <tr key={n.id}><td><b>{n.name}</b><div className="muted">{n.hostname || '-'} · {n.os || '-'}/{n.arch || '-'}</div><div className="muted">公网：{n.public_ip || '-'}</div></td><td><Badge tone={online(n) ? 'ok' : 'muted'}>{online(n) ? '在线' : '离线'}</Badge></td><td><Badge tone={fw.tone}>{fw.text}</Badge>{fw.note && <div className="mt-2 text-xs text-amber-700">{fw.note}</div>}{n.firewall_error && <div className="mt-2 text-xs text-rose-600">{n.firewall_error}</div>}</td><td><div className="muted">CPU {Math.round(m.cpu_percent || 0)}%</div><div className="muted">内存 {fmtBytes(m.memory_used)} / {fmtBytes(m.memory_total)}</div><div className="mt-2 h-2 rounded-full bg-slate-100"><i className="block h-full rounded-full bg-blue-500" style={{ width: `${pct(m.memory_used, m.memory_total)}%` }} /></div></td><td>{n.port_range_start || '-'} - {n.port_range_end || '-'}</td><td>{fmtDate(n.last_seen_at)}</td><td><RowActions><button className="btn" onClick={()=>props.onDetail(n)}>详情</button>{props.isAdmin && <><button className="btn" onClick={()=>props.onEdit(n)}>设置</button>{n.firewall_mode==='strict-pending' && <button className="btn btn-primary" onClick={()=>props.onConfirm(n)}>确认严格</button>}<button className="btn btn-danger" onClick={()=>props.onDelete(n)}>删除</button></>}</RowActions></td></tr>; })}</tbody></table></div></div>;
 }
 
+function Actions({ children }: any) {
+  return <div className="flex flex-wrap gap-2">{children}</div>;
+}
+
 function RulesPage(props: any) {
-  return <div className="grid gap-5"><Toolbar><button className="btn btn-primary" onClick={props.onNew}>新增规则</button><input className="input" placeholder="搜索规则 / 端口 / 目标" value={props.filters.q} onChange={e => props.setFilters((f: any)=>({ ...f, rules: { ...f.rules, q: e.target.value } }))} /><select className="input" value={props.filters.node} onChange={e => props.setFilters((f: any)=>({ ...f, rules: { ...f.rules, node: e.target.value } }))}><option value="all">全部节点</option>{props.nodes.map((n: NodeItem)=><option key={n.id} value={n.id}>{n.name}</option>)}</select><select className="input" value={props.filters.protocol} onChange={e => props.setFilters((f: any)=>({ ...f, rules: { ...f.rules, protocol: e.target.value } }))}><option value="all">全部协议</option><option value="tcp">TCP</option><option value="udp">UDP</option><option value="both">TCP + UDP</option></select></Toolbar><div className="table-wrap"><table className="table"><thead><tr><th>规则</th><th>节点 / 用户</th><th>监听</th><th>目标</th><th>状态</th><th>流量</th><th>操作</th></tr></thead><tbody>{props.rules.map((r: RuleItem)=>{ const st = props.statusOf(r.id); const s = statusText(st); return <tr key={r.id}><td><b>{r.name}</b><div className="muted">{r.description || '无备注'}</div></td><td>{props.nodeName(r.node_id)}<div className="muted">{props.ownerName(r.user_id)}</div></td><td><Badge tone="muted">{protocolText(r.protocol)}</Badge><div className="mt-2 font-mono">:{r.listen_port}</div></td><td className="font-mono">{r.target_host}:{r.target_port}</td><td>{r.enabled ? <Badge tone={s.tone}>{s.text}</Badge> : <Badge tone="muted">已停用</Badge>}{st.last_error && <div className="mt-2 text-xs text-rose-600">{st.last_error}</div>}</td><td>{fmtBytes(r.traffic_used)}{r.traffic_limit ? <div className="muted">上限 {fmtBytes(r.traffic_limit)}</div> : null}</td><td><RowActions><button className="btn" onClick={()=>props.onDetail(r)}>详情</button><button className="btn" onClick={()=>props.onTest(r)}>检测</button><button className="btn" onClick={()=>props.onEdit(r)}>编辑</button><button className="btn" onClick={()=>props.onToggle(r)}>{r.enabled ? '停用' : '启用'}</button><button className="btn btn-danger" onClick={()=>props.onDelete(r)}>删除</button></RowActions></td></tr>;})}</tbody></table></div></div>;
+  return <div className="grid gap-5">
+    <div className="toolbar-card card p-4">
+      <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+        <div>
+          <h2 className="text-lg font-black text-slate-900">转发规则</h2>
+          <p className="muted mt-1">搜索、筛选、检测和管理所有转发规则。</p>
+        </div>
+        <button className="btn btn-primary toolbar-primary" onClick={props.onNew}>
+          <span className="text-lg leading-none">＋</span>
+          新增规则
+        </button>
+      </div>
+
+      <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+        <input className="input" placeholder="搜索规则 / 端口 / 目标" value={props.filters.q} onChange={e => props.setFilters((f: any) => ({ ...f, rules: { ...f.rules, q: e.target.value } }))} />
+
+        <select className="input" value={props.filters.node} onChange={e => props.setFilters((f: any) => ({ ...f, rules: { ...f.rules, node: e.target.value } }))}>
+          <option value="all">全部节点</option>
+          {props.nodes.map((n: NodeItem) => <option key={n.id} value={n.id}>{n.name}</option>)}
+        </select>
+
+        <select className="input" value={props.filters.protocol} onChange={e => props.setFilters((f: any) => ({ ...f, rules: { ...f.rules, protocol: e.target.value } }))}>
+          <option value="all">全部协议</option>
+          <option value="tcp">TCP</option>
+          <option value="udp">UDP</option>
+          <option value="both">TCP + UDP</option>
+        </select>
+
+        <select className="input" value={props.filters.state} onChange={e => props.setFilters((f: any) => ({ ...f, rules: { ...f.rules, state: e.target.value } }))}>
+          <option value="all">全部状态</option>
+          <option value="enabled">已启用</option>
+          <option value="running">运行中</option>
+          <option value="stopped">已停止</option>
+          <option value="error">异常</option>
+          <option value="disabled">已停用</option>
+        </select>
+      </div>
+    </div>
+
+    <div className="table-wrap">
+      <table className="table">
+        <thead>
+          <tr>
+            <th>规则</th>
+            <th>节点 / 用户</th>
+            <th>监听</th>
+            <th>目标</th>
+            <th>状态</th>
+            <th>流量</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          {props.rules.map((r: RuleItem) => {
+            const st = props.statusOf(r.id);
+            const state = statusText(st);
+            return <tr key={r.id}>
+              <td>
+                <b>{r.name}</b>
+                <div className="muted">{r.description || '无备注'}</div>
+              </td>
+              <td>
+                {props.nodeName(r.node_id)}
+                <div className="muted">{props.ownerName(r.user_id)}</div>
+              </td>
+              <td>
+                <Badge tone="muted">{protocolText(r.protocol)}</Badge>
+                <div className="mt-2 font-mono">:{r.listen_port}</div>
+              </td>
+              <td className="font-mono">{r.target_host}:{r.target_port}</td>
+              <td>
+                {r.enabled ? <Badge tone={state.tone}>{state.text}</Badge> : <Badge tone="muted">已停用</Badge>}
+                {st.last_error && <div className="mt-2 text-xs text-rose-600">{st.last_error}</div>}
+              </td>
+              <td>
+                {fmtBytes(r.traffic_used)}
+                {r.traffic_limit ? <div className="muted">上限 {fmtBytes(r.traffic_limit)}</div> : null}
+              </td>
+              <td>
+                <Actions>
+                  <button className="btn" onClick={() => props.onDetail(r)}>详情</button>
+                  <button className="btn" onClick={() => props.onTest(r)}>检测</button>
+                  <button className="btn" onClick={() => props.onEdit(r)}>编辑</button>
+                  <button className="btn" onClick={() => props.onToggle(r)}>{r.enabled ? '停用' : '启用'}</button>
+                  <button className="btn btn-danger" onClick={() => props.onDelete(r)}>删除</button>
+                </Actions>
+              </td>
+            </tr>;
+          })}
+        </tbody>
+      </table>
+    </div>
+  </div>;
 }
 
 function TokensPage({ onCreate }: { onCreate: () => void }) { return <div className="card p-6"><h2 className="text-xl font-black">节点接入</h2><p className="mt-2 text-slate-500">生成一次性 Token 后，在转发节点服务器上执行安装命令。Token 注册成功后会改用节点密钥签名心跳。</p><button className="btn btn-primary mt-5" onClick={onCreate}>生成接入 Token</button><div className="mt-5 rounded-2xl bg-amber-50 p-4 text-sm text-amber-800">严格防火墙模式会保留 SSH 端口；如需救援，在节点执行 <code>relayguard-agent firewall rescue</code>。</div></div>; }
