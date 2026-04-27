@@ -12,13 +12,25 @@ var webFiles embed.FS
 func (s *Server) webHandler() http.Handler {
 	sub, err := fs.Sub(webFiles, "webdist")
 	if err != nil {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { http.Error(w, err.Error(), 500) })
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		})
 	}
+
 	fileServer := http.FileServer(http.FS(sub))
+
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/" {
-			r.URL.Path = "/index.html"
+		if r.URL.Path == "/" || r.URL.Path == "" || r.URL.Path == "/index.html" {
+			b, err := fs.ReadFile(sub, "index.html")
+			if err != nil {
+				http.Error(w, "index.html not found", http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = w.Write(b)
+			return
 		}
+
 		fileServer.ServeHTTP(w, r)
 	})
 }
