@@ -2,7 +2,7 @@ import React, { Fragment, useCallback, useEffect, useMemo, useState } from 'reac
 import { createRoot } from 'react-dom/client';
 import './styles.css';
 import { api } from './api';
-import type { BackupItem, ConnectivityTest, NodeItem, RuleItem, RuleStatus, SessionItem, User } from './types';
+import type { BackupItem, ConnectivityTest, NodeItem, RuleItem, RuleStatus, SessionItem, TrafficPoint, User } from './types';
 import { cn, firewallStatus, fmtBytes, fmtDate, fmtShortDate, online, pct, protocolText, roleText, statusText } from './utils';
 
 type Page = 'dashboard' | 'nodes' | 'rules' | 'users' | 'tokens' | 'audit' | 'backup' | 'account' | 'security';
@@ -157,8 +157,8 @@ function App() {
 
       <section className="p-5 lg:p-8 animate-fade-in">
         {page === 'dashboard' && <Dashboard nodes={nodes} rules={rules} statusOf={statusOf} />}
-        {page === 'nodes' && <NodesPage nodes={filteredNodes} filters={filters.nodes} setFilters={setFilters} isAdmin={isAdmin} onDetail={n => setModal({ kind: 'node-detail', node: n })} onEdit={n => setModal({ kind: 'node', node: n })} onConfirm={n => setModal({ kind: 'confirm', title: '确认严格模式', message: '确认该节点严格防火墙模式工作正常？确认后将长期保持严格模式。', danger: true, onConfirm: async () => { await updateNode(n.id, { name: n.name, port_range_start: n.port_range_start, port_range_end: n.port_range_end, firewall_mode: 'strict', max_rules: n.max_rules || 0 }); toast('已确认严格模式，等待 Agent 下一次心跳同步状态'); await refreshAll(true); } })} onDelete={n => setModal({ kind: 'confirm', title: '删除节点', message: '删除节点会同时删除该节点规则，确认？', danger: true, onConfirm: async () => { await api(`/api/nodes/${n.id}`, { method: 'DELETE' }); toast('节点已删除'); await refreshAll(true); } })} />}
-        {page === 'rules' && <RulesPage rules={filteredRules} nodes={nodes} users={users} filters={filters.rules} setFilters={setFilters} statusOf={statusOf} nodeName={nodeName} ownerName={ownerName} isAdmin={isAdmin} onNew={() => setModal({ kind: 'rule' })} onDetail={r => setModal({ kind: 'rule-detail', rule: r })} onEdit={r => setModal({ kind: 'rule', rule: r })} onTest={async r => { const d = await api<{ item: ConnectivityTest; message?: string }>(`/api/rules/${r.id}/test`, { method: 'POST' }); toast(d.message || '已提交检测'); setModal({ kind: 'rule-detail', rule: r }); }} onToggle={async r => { await api(`/api/rules/${r.id}/toggle`, { method: 'POST', body: JSON.stringify({ enabled: !r.enabled }) }); await refreshAll(true); }} onDelete={r => setModal({ kind: 'confirm', title: '删除规则', message: '确认删除该规则？', danger: true, onConfirm: async () => { await api(`/api/rules/${r.id}`, { method: 'DELETE' }); toast('规则已删除'); await refreshAll(true); } })} />}
+        {page === 'nodes' && <NodesPage nodes={filteredNodes} filters={filters.nodes} setFilters={setFilters} isAdmin={isAdmin} onDetail={n => setModal({ kind: 'node-detail', node: n })} onEdit={n => setModal({ kind: 'node', node: n })} onConfirm={n => setModal({ kind: 'confirm', title: '确认严格模式', message: '确认该节点 SSH 和转发服务均正常？确认后将保持严格防火墙模式。', danger: true, onConfirm: async () => { await updateNode(n.id, { name: n.name, port_range_start: n.port_range_start, port_range_end: n.port_range_end, firewall_mode: 'strict', max_rules: n.max_rules || 0 }); toast('已提交确认，等待节点同步严格防火墙状态'); await refreshAll(true); } })} onDelete={n => setModal({ kind: 'confirm', title: '删除节点', message: '删除节点会同时删除该节点规则，确认？', danger: true, onConfirm: async () => { await api(`/api/nodes/${n.id}`, { method: 'DELETE' }); toast('节点已删除'); await refreshAll(true); } })} />}
+        {page === 'rules' && <RulesPage rules={filteredRules} nodes={nodes} users={users} filters={filters.rules} setFilters={setFilters} statusOf={statusOf} nodeName={nodeName} ownerName={ownerName} isAdmin={isAdmin} onNew={() => setModal({ kind: 'rule' })} onDetail={r => setModal({ kind: 'rule-detail', rule: r })} onEdit={r => setModal({ kind: 'rule', rule: r })} onTest={async r => { const d = await api<{ item: ConnectivityTest; message?: string }>(`/api/rules/${r.id}/test`, { method: 'POST' }); toast(d.message || '已提交检测'); setModal({ kind: 'rule-detail', rule: r }); }} onToggle={async r => { await api(`/api/rules/${r.id}/toggle`, { method: 'POST', body: JSON.stringify({ enabled: !r.enabled }) }); await refreshAll(true); }} onDelete={r => setModal({ kind: 'confirm', title: '删除规则', message: '确认删除该规则？', danger: true, onConfirm: async () => { await api(`/api/rules/${r.id}`, { method: 'DELETE' }); toast('规则已删除'); await refreshAll(true); } })} toast={toast} />}
         {page === 'users' && <UsersPage users={users} nodes={nodes} onNew={() => setModal({ kind: 'user' })} onEdit={u => setModal({ kind: 'user', user: u })} onDelete={u => setModal({ kind: 'confirm', title: '删除用户', message: '确认删除该用户？该用户规则会被停用。', danger: true, onConfirm: async () => { await api(`/api/users/${u.id}`, { method: 'DELETE' }); toast('用户已删除'); await refreshAll(true); } })} />}
         {page === 'tokens' && <TokensPage onCreate={() => setModal({ kind: 'token' })} />}
         {page === 'audit' && <AuditPage />}
@@ -179,33 +179,70 @@ function pageTitle(page: Page) {
   return ({ dashboard: '仪表盘', nodes: '节点管理', rules: '转发规则', users: '用户管理', tokens: '节点接入', audit: '审计日志', backup: '备份恢复', account: '账号安全', security: '安全说明' } as Record<Page, string>)[page];
 }
 function pageSubtitle(page: Page) {
-  return ({ dashboard: '查看节点、规则、流量与风险概览', nodes: '管理转发节点、端口范围和防火墙托管', rules: '创建、检测、启停和查看转发规则', users: '配置用户权限、配额、节点和端口范围', tokens: '生成节点 Agent 一次性接入命令', audit: '查看重要操作记录', backup: '创建和恢复 SQLite 数据库备份', account: '修改密码、两步验证和会话管理', security: '了解节点接入、防火墙托管和救援策略' } as Record<Page, string>)[page];
+  return ({ dashboard: '查看节点、规则、服务端流量趋势和异常状态', nodes: '管理转发节点、端口范围和防火墙托管', rules: '管理转发规则，复制监听地址和目标地址', users: '配置用户权限、配额、节点和端口范围', tokens: '生成一次性接入命令并添加转发节点', audit: '查看重要操作记录', backup: '创建和恢复 SQLite 数据库备份', account: '修改密码、两步验证和会话管理', security: '查看部署、接入和防火墙托管注意事项' } as Record<Page, string>)[page];
 }
 
 function LoadingScreen() { return <div className="grid min-h-screen place-items-center"><div className="card p-8 text-center"><div className="mx-auto mb-4 h-10 w-10 animate-pulse-soft rounded-full bg-blue-600" /><div className="font-black">RelayGuard 正在加载...</div></div></div>; }
 
 function LoginPage({ onLogin, toast }: { onLogin: (u: User, v?: string) => void; toast: (m: string, t?: Toast['tone']) => void }) {
   const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState('');
+
   async function submit(e: React.FormEvent<HTMLFormElement>) {
-    e.preventDefault(); setBusy(true);
+    e.preventDefault();
+    if (busy) return;
+
+    setBusy(true);
+    setMessage('正在登录...');
+
     try {
       const fd = Object.fromEntries(new FormData(e.currentTarget));
-      const d = await api<{ user: User; version?: string }>('/api/auth/login', { method: 'POST', body: JSON.stringify(fd) });
+      const d = await api<{ user: User; version?: string }>('/api/auth/login', {
+        method: 'POST',
+        body: JSON.stringify(fd)
+      });
+      setMessage('登录成功，正在进入面板...');
       onLogin(d.user, d.version);
-    } catch (err: any) { toast(err.message, 'danger'); } finally { setBusy(false); }
+    } catch (err: any) {
+      const msg = err?.message || '登录失败，请检查用户名、密码或网络连接。';
+      setMessage(msg);
+      toast(msg, 'danger');
+    } finally {
+      setBusy(false);
+    }
   }
+
   return <div className="grid min-h-screen place-items-center p-6">
-    <div className="grid w-full max-w-5xl overflow-hidden rounded-[2rem] bg-white shadow-soft md:grid-cols-2">
-      <div className="bg-slate-950 p-10 text-white">
-        <div className="text-3xl font-black">RelayGuard</div><div className="mt-2 text-slate-300">中转卫士 · 安全可控的多节点端口转发面板</div>
-        <div className="mt-10 grid gap-4 text-sm text-slate-300"><p>无 CDN、无远程脚本，前端构建产物内嵌到 Go 二进制。</p><p>Agent 主动心跳，节点密钥签名，防火墙严格模式支持确认回滚。</p></div>
+    <div className="grid w-full max-w-4xl overflow-hidden rounded-[2rem] bg-white shadow-soft md:grid-cols-[.9fr_1.1fr]">
+      <div className="login-brand-panel p-10 text-white">
+        <div className="text-4xl font-black tracking-tight">RelayGuard</div>
+        <div className="mt-8 h-1 w-16 rounded-full bg-white/60" />
+        <p className="mt-6 text-sm text-white/72">请登录管理面板</p>
       </div>
-      <form onSubmit={submit} className="grid gap-4 p-10">
-        <h1 className="text-2xl font-black">登录面板</h1>
-        <label className="label">用户名<input className="input" name="username" autoComplete="username" required /></label>
-        <label className="label">密码<input className="input" type="password" name="password" autoComplete="current-password" required /></label>
-        <label className="label">两步验证码（未启用可留空）<input className="input" name="totp_code" inputMode="numeric" placeholder="6 位数字" /></label>
-        <button className="btn btn-primary mt-2" disabled={busy}>{busy ? '登录中...' : '登录'}</button>
+
+      <form onSubmit={submit} className="grid gap-4 p-8 sm:p-10">
+        <h1 className="text-2xl font-black text-slate-950">登录</h1>
+
+        {message && <div className={cn(
+          'rounded-2xl px-4 py-3 text-sm font-semibold',
+          message.includes('成功') || message.includes('正在登录') ? 'bg-teal-50 text-teal-700' : 'bg-rose-50 text-rose-700'
+        )}>{message}</div>}
+
+        <label className="label">用户名
+          <input className="input" name="username" autoComplete="username" required disabled={busy} />
+        </label>
+
+        <label className="label">密码
+          <input className="input" type="password" name="password" autoComplete="current-password" required disabled={busy} />
+        </label>
+
+        <label className="label">两步验证码
+          <input className="input" name="totp_code" inputMode="numeric" placeholder="未启用可留空" disabled={busy} />
+        </label>
+
+        <button className="btn btn-primary mt-2" disabled={busy}>
+          {busy ? '登录中...' : '登录'}
+        </button>
       </form>
     </div>
   </div>;
@@ -246,16 +283,16 @@ function useTrafficTrend(total: number) {
   return points;
 }
 
-function TrafficTrend({ total, points }: { total: number; points: TrendPoint[] }) {
+function TrafficTrend({ points, range, setRange }: { points: TrafficPoint[]; range: string; setRange: (v: string) => void }) {
   const width = 720;
   const height = 220;
   const padX = 28;
   const padY = 24;
-  const values = points.length ? points.map(p => Number(p.total || 0)) : [Number(total || 0)];
+  const values = points.length ? points.map(p => Number(p.total || 0)) : [0];
   const min = Math.min(...values);
-  const max = Math.max(...values, Number(total || 0));
+  const max = Math.max(...values);
   const span = Math.max(1, max - min);
-  const safePoints = points.length ? points : [{ ts: Date.now(), total: Number(total || 0) }];
+  const safePoints = points.length ? points : [{ time: new Date().toISOString(), total: 0, delta: 0 }];
 
   const coords = safePoints.map((p, i) => {
     const x = safePoints.length <= 1 ? padX : padX + i * ((width - padX * 2) / (safePoints.length - 1));
@@ -264,28 +301,42 @@ function TrafficTrend({ total, points }: { total: number; points: TrendPoint[] }
   });
 
   const line = coords.map(p => `${p.x},${p.y}`).join(' ');
-  const area = coords.length
-    ? `${padX},${height - padY} ${line} ${width - padX},${height - padY}`
-    : '';
-
-  const first = safePoints[0]?.total || 0;
-  const delta = Math.max(0, Number(total || 0) - Number(first || 0));
-  const lastTime = safePoints[safePoints.length - 1]?.ts;
+  const area = coords.length ? `${padX},${height - padY} ${line} ${width - padX},${height - padY}` : '';
+  const latest = safePoints[safePoints.length - 1];
+  const first = safePoints[0];
+  const growth = Math.max(0, Number(latest?.total || 0) - Number(first?.total || 0));
 
   return <div className="card traffic-card p-5">
     <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
       <div>
-        <h3 className="text-lg font-black text-slate-900">累计流量趋势</h3>
-        <p className="muted mt-1">基于浏览器本地采样的真实累计流量，不使用假数据。后续可升级为服务端持久化趋势。</p>
+        <h3 className="text-lg font-black text-slate-900">服务端流量趋势</h3>
+        <p className="muted mt-1">面板每 5 分钟采样一次规则累计流量。趋势用于观察变化，不代表实时带宽。</p>
       </div>
-      <div className="rounded-2xl bg-emerald-50 px-4 py-3 text-right">
-        <div className="text-xs font-bold text-emerald-700">本会话增量</div>
-        <div className="text-xl font-black text-emerald-800">{fmtBytes(delta)}</div>
+
+      <div className="flex flex-wrap gap-2">
+        {['24h', '7d', '30d'].map(item => <button key={item} className={cn('btn', range === item && 'btn-primary')} onClick={() => setRange(item)}>
+          {item === '24h' ? '24 小时' : item === '7d' ? '7 天' : '30 天'}
+        </button>)}
+      </div>
+    </div>
+
+    <div className="mt-4 grid gap-3 sm:grid-cols-3">
+      <div className="rounded-2xl bg-slate-50 px-4 py-3">
+        <div className="text-xs font-bold text-slate-500">当前累计</div>
+        <div className="mt-1 text-xl font-black text-slate-900">{fmtBytes(latest?.total || 0)}</div>
+      </div>
+      <div className="rounded-2xl bg-emerald-50 px-4 py-3">
+        <div className="text-xs font-bold text-emerald-700">区间增量</div>
+        <div className="mt-1 text-xl font-black text-emerald-800">{fmtBytes(growth)}</div>
+      </div>
+      <div className="rounded-2xl bg-blue-50 px-4 py-3">
+        <div className="text-xs font-bold text-blue-700">采样点</div>
+        <div className="mt-1 text-xl font-black text-blue-800">{safePoints.length}</div>
       </div>
     </div>
 
     <div className="mt-5 overflow-hidden rounded-3xl border border-slate-200/70 bg-gradient-to-b from-white to-slate-50 p-3">
-      <svg viewBox={`0 0 ${width} ${height}`} className="h-56 w-full" role="img" aria-label="累计流量趋势图">
+      <svg viewBox={`0 0 ${width} ${height}`} className="h-56 w-full" role="img" aria-label="服务端流量趋势图">
         <defs>
           <linearGradient id="trafficLine" x1="0" x2="1" y1="0" y2="0">
             <stop offset="0%" stopColor="#0f766e" />
@@ -309,9 +360,8 @@ function TrafficTrend({ total, points }: { total: number; points: TrendPoint[] }
     </div>
 
     <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500">
-      <span>采样点：{safePoints.length}</span>
-      <span>最近采样：{lastTime ? fmtDate(new Date(lastTime).toISOString()) : '-'}</span>
-      <span>当前累计：{fmtBytes(total)}</span>
+      <span>最近采样：{latest?.time ? fmtDate(latest.time) : '-'}</span>
+      <span>数据范围：{range === '24h' ? '最近 24 小时' : range === '7d' ? '最近 7 天' : '最近 30 天'}</span>
     </div>
   </div>;
 }
@@ -320,13 +370,30 @@ function Dashboard({ nodes, rules, statusOf }: { nodes: NodeItem[]; rules: RuleI
   const traffic = rules.reduce((sum, rule) => sum + Number(rule.traffic_used || 0), 0);
   const running = rules.filter(rule => statusOf(rule.id).state === 'running').length;
   const errors = rules.filter(rule => statusOf(rule.id).state === 'error').length;
-  const trend = useTrafficTrend(traffic);
+  const [range, setRange] = useState('24h');
+  const [points, setPoints] = useState<TrafficPoint[]>([]);
+  const [trendError, setTrendError] = useState('');
+
+  useEffect(() => {
+    let cancelled = false;
+    api<{ items: TrafficPoint[] }>(`/api/traffic/timeseries?range=${encodeURIComponent(range)}`)
+      .then(d => {
+        if (!cancelled) {
+          setPoints(d.items || []);
+          setTrendError('');
+        }
+      })
+      .catch((err: any) => {
+        if (!cancelled) setTrendError(err.message || '读取流量趋势失败');
+      });
+    return () => { cancelled = true; };
+  }, [range, traffic]);
 
   return <div className="grid gap-6">
     <div className="hero-card rounded-[2rem] p-8 text-white shadow-soft">
       <div className="text-sm font-bold text-teal-100">RelayGuard Console</div>
-      <h2 className="mt-3 text-3xl font-black">安全、清爽、可控的中转面板</h2>
-      <p className="mt-2 max-w-2xl text-slate-100/90">集中管理节点、转发规则、流量和防火墙托管。前端资源本地构建并内嵌到 Go 二进制，不使用 CDN。</p>
+      <h2 className="mt-3 text-3xl font-black">运行状态</h2>
+      <p className="mt-2 max-w-2xl text-slate-100/90">查看节点、转发规则、流量趋势和异常状态。</p>
     </div>
 
     <div className="grid gap-4 md:grid-cols-4">
@@ -336,7 +403,8 @@ function Dashboard({ nodes, rules, statusOf }: { nodes: NodeItem[]; rules: RuleI
       <Stat title="异常规则" value={String(errors)} danger={errors > 0} />
     </div>
 
-    <TrafficTrend total={traffic} points={trend} />
+    {trendError ? <div className="rounded-2xl bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-700">{trendError}</div> : null}
+    <TrafficTrend points={points} range={range} setRange={setRange} />
 
     <div className="grid gap-4 lg:grid-cols-2">
       <div className="card p-5">
@@ -377,6 +445,25 @@ function NodesPage(props: { nodes: NodeItem[]; filters: any; setFilters: any; is
   return <div className="grid gap-5"><Toolbar><input className="input" placeholder="搜索节点 / IP / 系统" value={props.filters.q} onChange={e => props.setFilters((f: any)=>({ ...f, nodes: { ...f.nodes, q: e.target.value } }))} /><select className="input" value={props.filters.status} onChange={e => props.setFilters((f: any)=>({ ...f, nodes: { ...f.nodes, status: e.target.value } }))}><option value="all">全部状态</option><option value="online">在线</option><option value="offline">离线</option></select></Toolbar><div className="table-wrap"><table className="table"><thead><tr><th>节点</th><th>状态</th><th>防火墙</th><th>资源</th><th>端口范围</th><th>最近心跳</th><th>操作</th></tr></thead><tbody>{props.nodes.map(n => { const fw = firewallStatus(n); const m = n.last_metrics || {}; return <tr key={n.id}><td><b>{n.name}</b><div className="muted">{n.hostname || '-'} · {n.os || '-'}/{n.arch || '-'}</div><div className="muted">公网：{n.public_ip || '-'}</div></td><td><Badge tone={online(n) ? 'ok' : 'muted'}>{online(n) ? '在线' : '离线'}</Badge></td><td><Badge tone={fw.tone}>{fw.text}</Badge>{fw.note && <div className="mt-2 text-xs text-amber-700">{fw.note}</div>}{n.firewall_error && <div className="mt-2 text-xs text-rose-600">{n.firewall_error}</div>}</td><td><div className="muted">CPU {Math.round(m.cpu_percent || 0)}%</div><div className="muted">内存 {fmtBytes(m.memory_used)} / {fmtBytes(m.memory_total)}</div><div className="mt-2 h-2 rounded-full bg-slate-100"><i className="block h-full rounded-full bg-blue-500" style={{ width: `${pct(m.memory_used, m.memory_total)}%` }} /></div></td><td>{n.port_range_start || '-'} - {n.port_range_end || '-'}</td><td>{fmtDate(n.last_seen_at)}</td><td><RowActions><button className="btn" onClick={()=>props.onDetail(n)}>详情</button>{props.isAdmin && <><button className="btn" onClick={()=>props.onEdit(n)}>设置</button>{n.firewall_mode==='strict-pending' && <button className="btn btn-primary" onClick={()=>props.onConfirm(n)}>确认严格</button>}<button className="btn btn-danger" onClick={()=>props.onDelete(n)}>删除</button></>}</RowActions></td></tr>; })}</tbody></table></div></div>;
 }
 
+async function copyText(value: string, toast?: (m: string, t?: Toast['tone']) => void) {
+  try {
+    await navigator.clipboard.writeText(value);
+    toast?.('已复制到剪贴板');
+  } catch {
+    toast?.('复制失败，请手动选择复制', 'warn');
+  }
+}
+
+function CopyPill({ label, value, toast }: { label: string; value: string; toast?: (m: string, t?: Toast['tone']) => void }) {
+  return <div className="copy-pill">
+    <div className="min-w-0">
+      <div className="text-[11px] font-bold text-slate-500">{label}</div>
+      <div className="truncate font-mono text-xs text-slate-800">{value}</div>
+    </div>
+    <button className="btn btn-xs" onClick={() => copyText(value, toast)}>复制</button>
+  </div>;
+}
+
 function Actions({ children }: any) {
   return <div className="flex flex-wrap gap-2">{children}</div>;
 }
@@ -387,7 +474,7 @@ function RulesPage(props: any) {
       <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
         <div>
           <h2 className="text-lg font-black text-slate-900">转发规则</h2>
-          <p className="muted mt-1">搜索、筛选、检测和管理所有转发规则。</p>
+          <p className="muted mt-1">管理监听端口、目标地址、状态检测和流量限制。</p>
         </div>
         <button className="btn btn-primary toolbar-primary" onClick={props.onNew}>
           <span className="text-lg leading-none">＋</span>
@@ -396,7 +483,7 @@ function RulesPage(props: any) {
       </div>
 
       <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-        <input className="input" placeholder="搜索规则 / 端口 / 目标" value={props.filters.q} onChange={e => props.setFilters((f: any) => ({ ...f, rules: { ...f.rules, q: e.target.value } }))} />
+        <input className="input" placeholder="搜索规则、端口、目标或节点" value={props.filters.q} onChange={e => props.setFilters((f: any) => ({ ...f, rules: { ...f.rules, q: e.target.value } }))} />
 
         <select className="input" value={props.filters.node} onChange={e => props.setFilters((f: any) => ({ ...f, rules: { ...f.rules, node: e.target.value } }))}>
           <option value="all">全部节点</option>
@@ -427,17 +514,23 @@ function RulesPage(props: any) {
           <tr>
             <th>规则</th>
             <th>节点 / 用户</th>
-            <th>监听</th>
-            <th>目标</th>
+            <th>监听 / 目标</th>
             <th>状态</th>
             <th>流量</th>
             <th>操作</th>
           </tr>
         </thead>
         <tbody>
+          {props.rules.length === 0 && <tr><td colSpan={6} className="text-center text-slate-500">暂无规则</td></tr>}
+
           {props.rules.map((r: RuleItem) => {
             const st = props.statusOf(r.id);
             const state = statusText(st);
+            const node = props.nodes.find((n: NodeItem) => n.id === r.node_id);
+            const listenHost = node?.public_ip || node?.hostname || '节点公网 IP 未上报';
+            const listenValue = `${listenHost}:${r.listen_port}`;
+            const targetValue = `${r.target_host}:${r.target_port}`;
+
             return <tr key={r.id}>
               <td>
                 <b>{r.name}</b>
@@ -448,17 +541,23 @@ function RulesPage(props: any) {
                 <div className="muted">{props.ownerName(r.user_id)}</div>
               </td>
               <td>
-                <Badge tone="muted">{protocolText(r.protocol)}</Badge>
-                <div className="mt-2 font-mono">:{r.listen_port}</div>
+                <div className="grid gap-2">
+                  <div className="flex flex-wrap gap-2">
+                    <Badge tone="muted">{protocolText(r.protocol)}</Badge>
+                    <Badge tone={r.enabled ? 'ok' : 'muted'}>{r.enabled ? '已启用' : '已停用'}</Badge>
+                  </div>
+                  <CopyPill label="监听地址" value={listenValue} toast={props.toast} />
+                  <CopyPill label="目标地址" value={targetValue} toast={props.toast} />
+                </div>
               </td>
-              <td className="font-mono">{r.target_host}:{r.target_port}</td>
               <td>
                 {r.enabled ? <Badge tone={state.tone}>{state.text}</Badge> : <Badge tone="muted">已停用</Badge>}
+                {st.updated_at && <div className="mt-2 text-xs text-slate-500">更新：{fmtDate(st.updated_at)}</div>}
                 {st.last_error && <div className="mt-2 text-xs text-rose-600">{st.last_error}</div>}
               </td>
               <td>
                 {fmtBytes(r.traffic_used)}
-                {r.traffic_limit ? <div className="muted">上限 {fmtBytes(r.traffic_limit)}</div> : null}
+                {r.traffic_limit ? <div className="muted">上限 {fmtBytes(r.traffic_limit)}</div> : <div className="muted">无上限</div>}
               </td>
               <td>
                 <Actions>
@@ -477,7 +576,7 @@ function RulesPage(props: any) {
   </div>;
 }
 
-function TokensPage({ onCreate }: { onCreate: () => void }) { return <div className="card p-6"><h2 className="text-xl font-black">节点接入</h2><p className="mt-2 text-slate-500">生成一次性 Token 后，在转发节点服务器上执行安装命令。Token 注册成功后会改用节点密钥签名心跳。</p><button className="btn btn-primary mt-5" onClick={onCreate}>生成接入 Token</button><div className="mt-5 rounded-2xl bg-amber-50 p-4 text-sm text-amber-800">严格防火墙模式会保留 SSH 端口；如需救援，在节点执行 <code>relayguard-agent firewall rescue</code>。</div></div>; }
+function TokensPage({ onCreate }: { onCreate: () => void }) { return <div className="card p-6"><h2 className="text-xl font-black">节点接入</h2><p className="mt-2 text-slate-500">生成一次性接入命令，并在节点服务器上执行。</p><button className="btn btn-primary mt-5" onClick={onCreate}>生成接入 Token</button><div className="mt-5 rounded-2xl bg-amber-50 p-4 text-sm text-amber-800">严格防火墙模式会保留 SSH 端口；如需救援，在节点执行 <code>relayguard-agent firewall rescue</code>。</div></div>; }
 function UsersPage({ users, nodes, onNew, onEdit, onDelete }: any) { return <div className="grid gap-5"><button className="btn btn-primary w-fit" onClick={onNew}>新增用户</button><div className="table-wrap"><table className="table"><thead><tr><th>用户</th><th>角色</th><th>规则额度</th><th>流量额度</th><th>端口范围</th><th>状态</th><th>操作</th></tr></thead><tbody>{users.map((u: User)=><tr key={u.id}><td><b>{u.username}</b><div className="muted">{u.id}</div></td><td>{roleText(u.role)}</td><td>{u.rule_limit || '不限'}</td><td>{fmtBytes(u.traffic_used)}{u.traffic_limit ? ` / ${fmtBytes(u.traffic_limit)}` : ' / 不限'}</td><td>{u.port_range_start || '-'} - {u.port_range_end || '-'}</td><td>{u.disabled ? <Badge tone="danger">禁用</Badge> : <Badge tone="ok">正常</Badge>} {u.must_change && <Badge tone="warn">需改密</Badge>}</td><td><RowActions><button className="btn" onClick={()=>onEdit(u)}>编辑</button><button className="btn btn-danger" onClick={()=>onDelete(u)}>删除</button></RowActions></td></tr>)}</tbody></table></div><div className="muted">当前节点数：{nodes.length}</div></div>; }
 
 function AuditPage() { const [items, setItems] = useState<any[]>([]); const [err, setErr] = useState(''); useEffect(()=>{ api<{items:any[]}>('/api/audit-logs?limit=100').then(d=>setItems(d.items||[])).catch(e=>setErr(e.message)); }, []); return <div className="table-wrap"><table className="table"><thead><tr><th>时间</th><th>用户</th><th>动作</th><th>目标</th><th>IP</th><th>详情</th></tr></thead><tbody>{err ? <tr><td colSpan={6} className="text-rose-600">{err}</td></tr> : items.map((x,i)=><tr key={i}><td>{fmtDate(x.created_at)}</td><td>{x.user_id}</td><td>{x.action}</td><td>{x.target}</td><td>{x.ip}</td><td>{x.detail}</td></tr>)}</tbody></table></div>; }

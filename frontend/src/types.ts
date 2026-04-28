@@ -104,3 +104,6 @@ export interface BackupItem {
   size?: number;
   created_at?: string;
 }
+
+
+export interface TrafficPoint { time: string; total: number; delta?: number; }

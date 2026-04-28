@@ -128,3 +128,20 @@ textarea {
     @apply bg-white/95;
   }
 }
+
+
+@layer components {
+  .login-brand-panel {
+    background:
+      radial-gradient(circle at 12% 20%, rgba(45, 212, 191, .22), transparent 22rem),
+      linear-gradient(135deg, #0f2f3a 0%, #173b4a 52%, #1e3a5f 100%);
+  }
+
+  .copy-pill {
+    @apply grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded-2xl border border-slate-200 bg-slate-50/80 px-3 py-2;
+  }
+
+  .btn-xs {
+    @apply min-h-8 rounded-xl px-3 py-1 text-xs;
+  }
+}

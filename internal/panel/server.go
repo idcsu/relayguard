@@ -89,6 +89,8 @@ func (s *Server) ListenAndServe() error {
 	mux.HandleFunc("/api/account/sessions", s.requireAuth(s.handleAccountSessions))
 	mux.HandleFunc("/api/account/sessions/logout-others", s.requireAuth(s.handleLogoutOtherSessions))
 	mux.HandleFunc("/api/dashboard", s.requireAuth(s.handleDashboard))
+
+	mux.HandleFunc("/api/traffic/timeseries", s.requireAuth(s.handleTrafficTimeseries))
 	mux.HandleFunc("/api/users", s.requireAuth(s.handleUsers))
 	mux.HandleFunc("/api/users/", s.requireAuth(s.handleUserByID))
 	mux.HandleFunc("/api/nodes", s.requireAuth(s.handleNodes))
@@ -106,6 +108,8 @@ func (s *Server) ListenAndServe() error {
 	mux.HandleFunc("/api/agent/install.sh", s.handleAgentInstallScript)
 	mux.HandleFunc("/install.sh", s.handlePanelInstallScript)
 	mux.Handle("/", s.webHandler())
+
+	go s.store.StartTrafficSnapshotLoop()
 
 	log.Printf("RelayGuard Panel 正在监听 %s", s.addr)
 	return http.ListenAndServe(s.addr, securityHeaders(mux))
