@@ -511,12 +511,16 @@ func (s *Store) UserBySession(token string) (common.User, bool) {
 
 func (s *Store) Login(username, password string) (common.User, bool) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	rows, err := s.db.query(`SELECT * FROM users WHERE username=? AND disabled=0`, username)
 	if err != nil || len(rows) == 0 {
+		s.mu.Unlock()
 		return common.User{}, false
 	}
 	u := rowToUser(rows[0])
+	s.mu.Unlock()
+
+	// PBKDF2 verification is CPU-intensive (~800ms), release the lock during computation
+	// to avoid blocking all other store operations.
 	if !common.VerifyPassword(password, u.PasswordHash) {
 		return common.User{}, false
 	}
@@ -1239,19 +1243,22 @@ func (s *Store) Dashboard() map[string]any {
 	now := time.Now()
 	totalTraffic := uint64(0)
 	enabledRules := 0
-	for _, r := range s.listRulesLocked("", nil) {
+	rules := s.listRulesLocked("", nil)
+	for _, r := range rules {
 		totalTraffic += r.TrafficUsed
 		if r.Enabled {
 			enabledRules++
 		}
 	}
+	nodes := s.listNodesRawLocked()
 	onlineNodes := 0
-	for _, n := range s.listNodesRawLocked() {
+	for _, n := range nodes {
 		if n.LastSeenAt != nil && now.Sub(*n.LastSeenAt) <= 35*time.Second {
 			onlineNodes++
 		}
 	}
-	return map[string]any{"nodes": s.nodeCount(), "online_nodes": onlineNodes, "rules": s.ruleCount(), "enabled_rules": enabledRules, "users": s.userCount(), "traffic_used": totalTraffic, "storage_engine": "sqlite", "version": common.Version}
+	numUsers, _ := s.db.querySingleInt(`SELECT COUNT(*) FROM users`)
+	return map[string]any{"nodes": len(nodes), "online_nodes": onlineNodes, "rules": len(rules), "enabled_rules": enabledRules, "users": numUsers, "traffic_used": totalTraffic, "storage_engine": "sqlite", "version": common.Version}
 }
 
 func (s *Store) Backup(destDir string) (string, error) {
