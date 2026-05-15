@@ -4,6 +4,7 @@ import (
 	"embed"
 	"io/fs"
 	"net/http"
+	"strings"
 )
 
 //go:embed webdist/*
@@ -27,8 +28,16 @@ func (s *Server) webHandler() http.Handler {
 				return
 			}
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+			w.Header().Set("Pragma", "no-cache")
+			w.Header().Set("Expires", "0")
 			_, _ = w.Write(b)
 			return
+		}
+
+		// Static assets with hash filenames can be cached aggressively
+		if strings.Contains(r.URL.Path, "/assets/") {
+			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 		}
 
 		fileServer.ServeHTTP(w, r)
