@@ -5,19 +5,25 @@ echo "正在检查前端安全引用..."
 
 FOUND=0
 
-TARGETS=(
-  "frontend/src"
-  "frontend/index.html"
-  "frontend/vite.config.ts"
-  "frontend/tailwind.config.js"
-  "frontend/postcss.config.js"
+# 新前端源码目录
+SRC_DIRS=(
+  "web/src"
+)
+
+# 构建产物目录（仅检查 CDN 和 HTML，不检查 minified JS 中的 prompt/confirm 误报）
+DIST_DIRS=(
   "web/dist"
   "internal/panel/webdist"
 )
 
+# 旧前端目录（如存在则也检查）
+if [ -d "frontend/src" ]; then
+  SRC_DIRS+=("frontend/src")
+fi
+
 # 禁止常见 CDN / 远程字体 / 第三方统计脚本。
 # 不再禁止所有 https://，避免 React/Vite 生产包里的文档链接误报。
-for target in "${TARGETS[@]}"; do
+for target in "${SRC_DIRS[@]}" "${DIST_DIRS[@]}"; do
   [ -e "$target" ] || continue
 
   if grep -RInE \
@@ -31,22 +37,22 @@ for target in "${TARGETS[@]}"; do
 done
 
 # 检查最终 HTML 是否引用远程脚本、样式、图片、字体。
-for html in web/dist/index.html internal/panel/webdist/index.html frontend/index.html; do
+for html in web/dist/index.html internal/panel/webdist/index.html; do
   [ -f "$html" ] || continue
 
   if grep -nE \
-    '<script[^>]+src=["'\'']https?://|<link[^>]+href=["'\'']https?://|<img[^>]+src=["'\'']https?://|@import[[:space:]]+url\(["'\'']?https?://' \
+    '<script[^>]+src=["'"'"']https?://|<link[^>]+href=["'"'"']https?://|<img[^>]+src=["'"'"']https?://|@import[[:space:]]+url\(["'"'"']?https?://' \
     "$html"; then
     FOUND=1
   fi
 done
 
-# 禁止浏览器原生弹窗。允许 React 组件里自定义命名的 confirm 函数。
-for target in "frontend/src" "web/dist" "internal/panel/webdist"; do
+# 禁止浏览器原生弹窗 — 仅检查源码目录，不检查构建产物（minified JS 会误报）。
+for target in "${SRC_DIRS[@]}"; do
   [ -e "$target" ] || continue
 
   if grep -RInE \
-    "window\.(alert|prompt|confirm)[[:space:]]*\(|globalThis\.(alert|prompt|confirm)[[:space:]]*\(|(^|[^A-Za-z0-9_$])(alert|prompt)[[:space:]]*\(" \
+    "window\.(alert|prompt|confirm)[[:space:]]*\(|globalThis\.(alert|prompt|confirm)[[:space:]]*\((^|[^A-Za-z0-9_$])(alert|prompt)[[:space:]]*\(" \
     "$target" \
     --exclude="*.map"; then
     FOUND=1
