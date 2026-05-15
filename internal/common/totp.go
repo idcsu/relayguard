@@ -2,7 +2,7 @@ package common
 
 import (
 	"crypto/hmac"
-	"crypto/sha256"
+	"crypto/sha1"
 	"crypto/subtle"
 	"encoding/base32"
 	"encoding/binary"
@@ -51,7 +51,7 @@ func TOTPURI(issuer, account, secret string) string {
 	v := url.Values{}
 	v.Set("secret", strings.ToUpper(strings.TrimSpace(secret)))
 	v.Set("issuer", issuer)
-	v.Set("algorithm", "SHA256")
+	v.Set("algorithm", "SHA1")
 	v.Set("digits", "6")
 	v.Set("period", fmt.Sprint(TOTPPeriodSeconds))
 	return "otpauth://totp/" + label + "?" + v.Encode()
@@ -108,7 +108,7 @@ func hotp(secret string, counter uint64) (string, error) {
 	}
 	var msg [8]byte
 	binary.BigEndian.PutUint64(msg[:], counter)
-	mac := hmac.New(sha256.New, key)
+	mac := hmac.New(sha1.New, key)
 	_, _ = mac.Write(msg[:])
 	sum := mac.Sum(nil)
 	offset := sum[len(sum)-1] & 0x0f
