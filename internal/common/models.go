@@ -5,7 +5,7 @@ import "time"
 const (
 	ProjectName   = "RelayGuard"
 	ProjectNameCN = "中转卫士"
-	Version       = "0.18.1"
+	Version       = "0.18.2"
 )
 
 type User struct {
