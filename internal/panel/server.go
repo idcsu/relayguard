@@ -342,7 +342,7 @@ func (s *Server) rotateSessionCookie(w http.ResponseWriter, r *http.Request) (co
 		return common.Session{}, false
 	}
 	isHTTPS := r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
-	newCookie := &http.Cookie{Name: "rg_session", Value: sess.Token, Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode, Expires: sess.ExpiresAt, Secure: isHTTPS}
+	newCookie := &http.Cookie{Name: "rg_session", Value: sess.Token, Path: "/", HttpOnly: true, SameSite: http.SameSiteLaxMode, Expires: sess.ExpiresAt, Secure: isHTTPS}
 	http.SetCookie(w, newCookie)
 	return sess, true
 }
@@ -408,7 +408,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	isHTTPS := r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
-	cookie := &http.Cookie{Name: "rg_session", Value: sess.Token, Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode, Expires: sess.ExpiresAt, Secure: isHTTPS}
+	cookie := &http.Cookie{Name: "rg_session", Value: sess.Token, Path: "/", HttpOnly: true, SameSite: http.SameSiteLaxMode, Expires: sess.ExpiresAt, Secure: isHTTPS}
 	http.SetCookie(w, cookie)
 	u = sanitizeUser(u)
 	s.store.AddAudit(u.ID, "login", "panel", ip, "登录面板")
