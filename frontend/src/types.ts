@@ -72,6 +72,7 @@ export interface RuleItem {
   expire_at?: string;
   source_cidrs?: string[];
   firewall_managed?: boolean;
+  tags?: string[];
   created_at?: string;
 }
 

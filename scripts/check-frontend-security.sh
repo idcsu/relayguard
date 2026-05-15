@@ -5,24 +5,18 @@ echo "正在检查前端安全引用..."
 
 FOUND=0
 
-# 新前端源码目录
+# 源码目录（只检查源码，不检查构建产物 minified JS）
 SRC_DIRS=(
-  "web/src"
+  "frontend/src"
 )
 
 # 构建产物目录（仅检查 CDN 和 HTML，不检查 minified JS 中的 prompt/confirm 误报）
 DIST_DIRS=(
-  "web/dist"
+  "frontend/dist"
   "internal/panel/webdist"
 )
 
-# 旧前端目录（如存在则也检查）
-if [ -d "frontend/src" ]; then
-  SRC_DIRS+=("frontend/src")
-fi
-
 # 禁止常见 CDN / 远程字体 / 第三方统计脚本。
-# 不再禁止所有 https://，避免 React/Vite 生产包里的文档链接误报。
 for target in "${SRC_DIRS[@]}" "${DIST_DIRS[@]}"; do
   [ -e "$target" ] || continue
 
@@ -37,7 +31,7 @@ for target in "${SRC_DIRS[@]}" "${DIST_DIRS[@]}"; do
 done
 
 # 检查最终 HTML 是否引用远程脚本、样式、图片、字体。
-for html in web/dist/index.html internal/panel/webdist/index.html; do
+for html in frontend/dist/index.html internal/panel/webdist/index.html; do
   [ -f "$html" ] || continue
 
   if grep -nE \
@@ -47,7 +41,7 @@ for html in web/dist/index.html internal/panel/webdist/index.html; do
   fi
 done
 
-# 禁止浏览器原生弹窗 — 仅检查源码目录，不检查构建产物（minified JS 会误报）。
+# 禁止浏览器原生弹窗 — 仅检查源码目录（minified JS 会有误报）。
 for target in "${SRC_DIRS[@]}"; do
   [ -e "$target" ] || continue
 

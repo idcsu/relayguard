@@ -5,7 +5,7 @@ import { api } from './api';
 import type { BackupItem, ConnectivityTest, NodeItem, RuleItem, RuleStatus, SessionItem, TrafficPoint, User } from './types';
 import { cn, firewallStatus, fmtBytes, fmtDate, fmtShortDate, online, pct, protocolText, roleText, statusText } from './utils';
 
-type Page = 'dashboard' | 'nodes' | 'rules' | 'users' | 'tokens' | 'audit' | 'backup' | 'account' | 'security';
+type Page = 'dashboard' | 'nodes' | 'rules' | 'users' | 'tokens' | 'audit' | 'backup' | 'account' | 'security' | 'settings';
 type Toast = { id: number; text: string; tone?: 'ok' | 'warn' | 'danger' };
 
 type ModalState =
@@ -27,6 +27,7 @@ const navs: Array<[Page, string, string]> = [
   ['tokens', '节点接入', '＋'],
   ['audit', '审计日志', '≡'],
   ['backup', '备份恢复', '◫'],
+  ['settings', '系统设置', '⚙'],
   ['account', '账号安全', '◉'],
   ['security', '安全说明', '盾']
 ];
@@ -43,7 +44,7 @@ function App() {
   const [refreshing, setRefreshing] = useState(false);
   const [modal, setModal] = useState<ModalState>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
-  const [filters, setFilters] = useState({ nodes: { q: '', status: 'all' }, rules: { q: '', node: 'all', protocol: 'all', state: 'all' } });
+  const [filters, setFilters] = useState({ nodes: { q: '', status: 'all' }, rules: { q: '', node: 'all', protocol: 'all', state: 'all', tags: '' } });
 
   const isAdmin = !!user && ['super_admin', 'admin'].includes(user.role);
   const statusOf = useCallback((id: string) => statuses[id] || {}, [statuses]);
@@ -119,7 +120,7 @@ function App() {
   if (loading) return <LoadingScreen />;
   if (!user) return <LoginPage onLogin={(u, v) => { setUser(u); setVersion(v || version); if (u.must_change) setPage('account'); }} toast={toast} />;
 
-  const visibleNavs = navs.filter(([id]) => isAdmin || !['users', 'tokens', 'audit', 'backup'].includes(id));
+  const visibleNavs = navs.filter(([id]) => isAdmin || !['users', 'tokens', 'audit', 'backup', 'settings'].includes(id));
 
   return <div className="min-h-screen">
     <aside className="fixed inset-y-0 left-0 z-30 hidden w-72 border-r border-slate-200/70 bg-slate-950 text-white shadow-soft lg:block">
@@ -158,28 +159,29 @@ function App() {
       <section className="p-5 lg:p-8 animate-fade-in">
         {page === 'dashboard' && <Dashboard nodes={nodes} rules={rules} statusOf={statusOf} />}
         {page === 'nodes' && <NodesPage nodes={filteredNodes} filters={filters.nodes} setFilters={setFilters} isAdmin={isAdmin} onDetail={n => setModal({ kind: 'node-detail', node: n })} onEdit={n => setModal({ kind: 'node', node: n })} onConfirm={n => setModal({ kind: 'confirm', title: '确认严格模式', message: '确认该节点 SSH 和转发服务均正常？确认后将保持严格防火墙模式。', danger: true, onConfirm: async () => { await updateNode(n.id, { name: n.name, port_range_start: n.port_range_start, port_range_end: n.port_range_end, firewall_mode: 'strict', max_rules: n.max_rules || 0 }); toast('已提交确认，等待节点同步严格防火墙状态'); await refreshAll(true); } })} onDelete={n => setModal({ kind: 'confirm', title: '删除节点', message: '删除节点会同时删除该节点规则，确认？', danger: true, onConfirm: async () => { await api(`/api/nodes/${n.id}`, { method: 'DELETE' }); toast('节点已删除'); await refreshAll(true); } })} />}
-        {page === 'rules' && <RulesPage rules={filteredRules} nodes={nodes} users={users} filters={filters.rules} setFilters={setFilters} statusOf={statusOf} nodeName={nodeName} ownerName={ownerName} isAdmin={isAdmin} onNew={() => setModal({ kind: 'rule' })} onDetail={r => setModal({ kind: 'rule-detail', rule: r })} onEdit={r => setModal({ kind: 'rule', rule: r })} onTest={async r => { const d = await api<{ item: ConnectivityTest; message?: string }>(`/api/rules/${r.id}/test`, { method: 'POST' }); toast(d.message || '已提交检测'); setModal({ kind: 'rule-detail', rule: r }); }} onToggle={async r => { await api(`/api/rules/${r.id}/toggle`, { method: 'POST', body: JSON.stringify({ enabled: !r.enabled }) }); await refreshAll(true); }} onDelete={r => setModal({ kind: 'confirm', title: '删除规则', message: '确认删除该规则？', danger: true, onConfirm: async () => { await api(`/api/rules/${r.id}`, { method: 'DELETE' }); toast('规则已删除'); await refreshAll(true); } })} toast={toast} />}
+{page === 'rules' && <RulesPage rules={filteredRules} nodes={nodes} users={users} filters={filters.rules} setFilters={setFilters} statusOf={statusOf} nodeName={nodeName} ownerName={ownerName} isAdmin={isAdmin} onNew={() => setModal({ kind: 'rule' })} onDetail={r => setModal({ kind: 'rule-detail', rule: r })} onEdit={r => setModal({ kind: 'rule', rule: r })} onTest={async r => { const d = await api<{ item: ConnectivityTest; message?: string }>(`/api/rules/${r.id}/test`, { method: 'POST' }); toast(d.message || '已提交检测'); setModal({ kind: 'rule-detail', rule: r }); }} onToggle={async r => { await api(`/api/rules/${r.id}/toggle`, { method: 'POST', body: JSON.stringify({ enabled: !r.enabled }) }); await refreshAll(true); }} onClone={async r => { await api(`/api/rules/${r.id}/clone`, { method: 'POST' }); toast('规则已克隆'); await refreshAll(true); }} onResetTraffic={async r => { await api(`/api/rules/reset-traffic/${r.id}`, { method: 'POST' }); toast('流量已重置'); await refreshAll(true); }} onDelete={r => setModal({ kind: 'confirm', title: '删除规则', message: '确认删除该规则？', danger: true, onConfirm: async () => { await api(`/api/rules/${r.id}`, { method: 'DELETE' }); toast('规则已删除'); await refreshAll(true); } })} toast={toast} />}
         {page === 'users' && <UsersPage users={users} nodes={nodes} onNew={() => setModal({ kind: 'user' })} onEdit={u => setModal({ kind: 'user', user: u })} onDelete={u => setModal({ kind: 'confirm', title: '删除用户', message: '确认删除该用户？该用户规则会被停用。', danger: true, onConfirm: async () => { await api(`/api/users/${u.id}`, { method: 'DELETE' }); toast('用户已删除'); await refreshAll(true); } })} />}
         {page === 'tokens' && <TokensPage onCreate={() => setModal({ kind: 'token' })} />}
         {page === 'audit' && <AuditPage />}
         {page === 'backup' && <BackupPage toast={toast} confirm={(title, message, onConfirm) => setModal({ kind: 'confirm', title, message, danger: true, onConfirm })} />}
         {page === 'account' && <AccountPage user={user} setUser={setUser} toast={toast} openTotp={() => setModal({ kind: 'totp' })} />}
+        {page === 'settings' && <SettingsPage toast={toast} />}
         {page === 'security' && <SecurityPage />}
       </section>
     </main>
 
     <ToastStack items={toasts} />
-    <ModalHost modal={modal} setModal={setModal} nodes={nodes} users={users} currentUser={user} refreshAll={refreshAll} toast={toast} />
+    <ModalHost modal={modal} setModal={setModal} nodes={nodes} users={users} currentUser={user} setUser={setUser} refreshAll={refreshAll} toast={toast} />
   </div>;
 
   async function updateNode(id: string, payload: any) { await api(`/api/nodes/${id}`, { method: 'PUT', body: JSON.stringify(payload) }); }
 }
 
 function pageTitle(page: Page) {
-  return ({ dashboard: '仪表盘', nodes: '节点管理', rules: '转发规则', users: '用户管理', tokens: '节点接入', audit: '审计日志', backup: '备份恢复', account: '账号安全', security: '安全说明' } as Record<Page, string>)[page];
+  return ({ dashboard: '仪表盘', nodes: '节点管理', rules: '转发规则', users: '用户管理', tokens: '节点接入', audit: '审计日志', backup: '备份恢复', settings: '系统设置', account: '账号安全', security: '安全说明' } as Record<Page, string>)[page];
 }
 function pageSubtitle(page: Page) {
-  return ({ dashboard: '查看节点、规则、服务端流量趋势和异常状态', nodes: '管理转发节点、端口范围和防火墙托管', rules: '管理转发规则，复制监听地址和目标地址', users: '配置用户权限、配额、节点和端口范围', tokens: '生成一次性接入命令并添加转发节点', audit: '查看重要操作记录', backup: '创建和恢复 SQLite 数据库备份', account: '修改密码、两步验证和会话管理', security: '查看部署、接入和防火墙托管注意事项' } as Record<Page, string>)[page];
+  return ({ dashboard: '查看节点、规则、服务端流量趋势和异常状态', nodes: '管理转发节点、端口范围和防火墙托管', rules: '管理转发规则，复制监听地址和目标地址', users: '配置用户权限、配额、节点和端口范围', tokens: '生成一次性接入命令并添加转发节点', audit: '查看重要操作记录', backup: '创建和恢复 SQLite 数据库备份', settings: '配置站点名称、心跳间隔、会话时长和 Webhook', account: '修改密码、两步验证和会话管理', security: '查看部署、接入和防火墙托管注意事项' } as Record<Page, string>)[page];
 }
 
 function LoadingScreen() { return <div className="grid min-h-screen place-items-center"><div className="card p-8 text-center"><div className="mx-auto mb-4 h-10 w-10 animate-pulse-soft rounded-full bg-blue-600" /><div className="font-black">RelayGuard 正在加载...</div></div></div>; }
@@ -469,6 +471,18 @@ function Actions({ children }: any) {
 }
 
 function RulesPage(props: any) {
+  const [tagFilter, setTagFilter] = useState('');
+  const [tagRules, setTagRules] = useState<RuleItem[] | null>(null);
+  const displayRules = tagRules !== null ? tagRules : props.rules;
+
+  function applyTagFilter() {
+    const tags = tagFilter.trim();
+    if (!tags) { setTagRules(null); return; }
+    api<{ items: RuleItem[] }>(`/api/rules/tags?tags=${encodeURIComponent(tags)}`)
+      .then(d => { setTagRules(d.items || []); props.toast(`标签筛选：${d.items?.length || 0} 条规则`); })
+      .catch((e: any) => { props.toast(e.message || '标签筛选失败', 'danger'); });
+  }
+
   return <div className="grid gap-5">
     <div className="toolbar-card card p-4">
       <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
@@ -506,6 +520,12 @@ function RulesPage(props: any) {
           <option value="disabled">已停用</option>
         </select>
       </div>
+
+      <div className="mt-3 flex flex-wrap items-center gap-3">
+        <input className="input max-w-xs" placeholder="标签筛选（逗号分隔）" value={tagFilter} onChange={e => setTagFilter(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); applyTagFilter(); } }} />
+        <button className="btn" onClick={applyTagFilter}>筛选标签</button>
+        {tagRules !== null && <button className="btn" onClick={() => { setTagFilter(''); setTagRules(null); }}>清除标签筛选</button>}
+      </div>
     </div>
 
     <div className="table-wrap">
@@ -521,9 +541,9 @@ function RulesPage(props: any) {
           </tr>
         </thead>
         <tbody>
-          {props.rules.length === 0 && <tr><td colSpan={6} className="text-center text-slate-500">暂无规则</td></tr>}
+          {displayRules.length === 0 && <tr><td colSpan={6} className="text-center text-slate-500">暂无规则</td></tr>}
 
-          {props.rules.map((r: RuleItem) => {
+          {displayRules.map((r: RuleItem) => {
             const st = props.statusOf(r.id);
             const state = statusText(st);
             const node = props.nodes.find((n: NodeItem) => n.id === r.node_id);
@@ -535,6 +555,7 @@ function RulesPage(props: any) {
               <td>
                 <b>{r.name}</b>
                 <div className="muted">{r.description || '无备注'}</div>
+                {r.tags && r.tags.length > 0 && <div className="mt-1 flex flex-wrap gap-1">{r.tags.map((t: string) => <span key={t} className="rounded-lg bg-blue-50 px-2 py-0.5 text-xs font-semibold text-blue-700">{t}</span>)}</div>}
               </td>
               <td>
                 {props.nodeName(r.node_id)}
@@ -564,7 +585,9 @@ function RulesPage(props: any) {
                   <button className="btn" onClick={() => props.onDetail(r)}>详情</button>
                   <button className="btn" onClick={() => props.onTest(r)}>检测</button>
                   <button className="btn" onClick={() => props.onEdit(r)}>编辑</button>
+                  <button className="btn" onClick={() => props.onClone(r)}>克隆</button>
                   <button className="btn" onClick={() => props.onToggle(r)}>{r.enabled ? '停用' : '启用'}</button>
+                  {props.isAdmin && <button className="btn" onClick={() => props.onResetTraffic(r)}>重置流量</button>}
                   <button className="btn btn-danger" onClick={() => props.onDelete(r)}>删除</button>
                 </Actions>
               </td>
@@ -582,9 +605,66 @@ function UsersPage({ users, nodes, onNew, onEdit, onDelete }: any) { return <div
 function AuditPage() { const [items, setItems] = useState<any[]>([]); const [err, setErr] = useState(''); useEffect(()=>{ api<{items:any[]}>('/api/audit-logs?limit=100').then(d=>setItems(d.items||[])).catch(e=>setErr(e.message)); }, []); return <div className="table-wrap"><table className="table"><thead><tr><th>时间</th><th>用户</th><th>动作</th><th>目标</th><th>IP</th><th>详情</th></tr></thead><tbody>{err ? <tr><td colSpan={6} className="text-rose-600">{err}</td></tr> : items.map((x,i)=><tr key={i}><td>{fmtDate(x.created_at)}</td><td>{x.user_id}</td><td>{x.action}</td><td>{x.target}</td><td>{x.ip}</td><td>{x.detail}</td></tr>)}</tbody></table></div>; }
 function BackupPage({ toast, confirm }: any) { const [items, setItems] = useState<BackupItem[]>([]); const load = () => api<{items:BackupItem[]}>('/api/backups').then(d=>setItems(d.items||[])).catch((e: any)=>toast(e.message,'danger')); useEffect(() => { load(); }, []); async function create(){ await api('/api/backups',{method:'POST'}); toast('备份已创建'); load(); } return <div className="grid gap-5"><Toolbar><button className="btn btn-primary" onClick={create}>立即备份</button><button className="btn" onClick={load}>刷新</button></Toolbar><div className="table-wrap"><table className="table"><thead><tr><th>文件</th><th>大小</th><th>创建时间</th><th>操作</th></tr></thead><tbody>{items.map(b=><tr key={b.name}><td className="font-mono">{b.name}</td><td>{fmtBytes(b.size)}</td><td>{fmtDate(b.created_at)}</td><td><button className="btn btn-danger" onClick={()=>confirm('恢复备份', `恢复 ${b.name} 会覆盖当前数据库，恢复前会自动备份当前数据。`, async()=>{ await api(`/api/backups/${encodeURIComponent(b.name)}/restore`, { method:'POST' }); toast('恢复完成'); })}>恢复</button></td></tr>)}</tbody></table></div></div>; }
 function AccountPage({ user, setUser, toast, openTotp }: any) { const [sessions, setSessions] = useState<SessionItem[]>([]); const loadSessions = () => api<{items:SessionItem[]}>('/api/account/sessions').then(d=>setSessions(d.items||[])).catch((e:any)=>toast(e.message,'danger')); useEffect(() => { loadSessions(); }, []); async function changePassword(e: React.FormEvent<HTMLFormElement>){ e.preventDefault(); const data = Object.fromEntries(new FormData(e.currentTarget)); const d = await api<{user:User}>('/api/account/password', { method:'POST', body: JSON.stringify(data) }); setUser(d.user); toast('密码已修改'); } return <div className="grid gap-5 lg:grid-cols-2"><form onSubmit={changePassword} className="card grid gap-4 p-5"><h2 className="text-xl font-black">修改密码</h2><label className="label">当前密码<input className="input" type="password" name="old_password" required /></label><label className="label">新密码<input className="input" type="password" name="new_password" required /></label><button className="btn btn-primary">保存新密码</button></form><div className="card p-5"><h2 className="text-xl font-black">两步验证</h2><p className="muted mt-2">当前状态：{user.totp_enabled ? '已启用' : '未启用'}</p><button className="btn mt-4" onClick={openTotp}>{user.totp_enabled ? '管理两步验证' : '启用两步验证'}</button></div><div className="card p-5 lg:col-span-2"><div className="flex justify-between"><h2 className="text-xl font-black">登录会话</h2><button className="btn" onClick={loadSessions}>刷新</button></div><div className="mt-4 grid gap-2">{sessions.map(s=><div key={s.id} className="rounded-2xl bg-slate-50 p-3"><b>{s.ip || '-'}</b><div className="muted">{s.user_agent || '-'}</div><div className="muted">创建：{fmtDate(s.created_at)} · 过期：{fmtDate(s.expires_at)}</div></div>)}</div></div></div>; }
-function SecurityPage(){ return <div className="card p-6 leading-8 text-slate-700"><h2 className="text-xl font-black text-slate-950">安全说明</h2><p>RelayGuard 前端不使用 CDN，不加载远程字体或第三方统计脚本。所有资源均通过本地 npm 构建并内嵌到 Go 面板。</p><p>Agent 默认主动连接面板，节点注册使用一次性 Token，后续心跳使用节点密钥签名。</p><p>严格防火墙模式会先进入 60 秒待确认窗口；确认后才长期保持，未确认则自动回滚。</p></div>; }
+function SettingsPage({ toast }: any) {
+  const [settings, setSettings] = useState<Record<string, string>>({});
+  const [editing, setEditing] = useState<Record<string, string>>({});
+  const [busy, setBusy] = useState(false);
+  const [loaded, setLoaded] = useState(false);
 
-function ModalHost({ modal, setModal, nodes, users, currentUser, refreshAll, toast }: any) {
+  useEffect(() => {
+    api<{ items: Record<string, string> }>('/api/settings').then(d => {
+      setSettings(d.items || {});
+      setEditing(d.items || {});
+      setLoaded(true);
+    }).catch((e: any) => toast(e.message || '加载设置失败', 'danger'));
+  }, []);
+
+  async function save() {
+    setBusy(true);
+    try {
+      const changes: Record<string, string> = {};
+      for (const k of Object.keys(editing)) {
+        if (editing[k] !== (settings[k] || '')) changes[k] = editing[k];
+      }
+      if (Object.keys(changes).length === 0) { toast('没有更改'); setBusy(false); return; }
+      await api('/api/settings', { method: 'PUT', body: JSON.stringify(changes) });
+      setSettings({ ...editing });
+      toast('设置已保存');
+    } catch (e: any) { toast(e.message || '保存失败', 'danger'); } finally { setBusy(false); }
+  }
+
+  if (!loaded) return <div className="card p-6 text-center text-slate-500">加载中...</div>;
+
+  const fields: Array<[string, string, string, string?]> = [
+    ['site_name', '站点名称', editing.site_name || '', '显示在面板标题和 Agent 安装脚本中'],
+    ['agent_interval', '心跳间隔（秒）', editing.agent_interval || '30', 'Agent 上报心跳的间隔，5-300 秒'],
+    ['session_ttl_hours', '会话有效期（小时）', editing.session_ttl_hours || '72', '登录会话的过期时间，1-8760 小时'],
+    ['audit_retention_days', '审计日志保留天数', editing.audit_retention_days || '90', '超过保留天数的审计日志会被自动清理，7-3650 天'],
+    ['webhook_url', 'Webhook URL', editing.webhook_url || '', '事件通知的 HTTPS URL，留空关闭'],
+    ['webhook_secret', 'Webhook 密钥', editing.webhook_secret || '', '用于签名 Webhook 请求的密钥'],
+  ];
+
+  return <div className="grid gap-5">
+    <div className="card p-6">
+      <h2 className="text-xl font-black">系统设置</h2>
+      <p className="muted mt-2">配置站点名称、Agent 心跳间隔、会话有效期和 Webhook 通知。仅管理员可修改。</p>
+      <div className="mt-5 grid gap-5">
+        {fields.map(([key, label, value, hint]) => (
+          <label key={key} className="label">
+            {label}
+            <input className="input" value={editing[key] || ''} onChange={e => setEditing({ ...editing, [key]: e.target.value })} placeholder={hint || label} />
+            {hint && <span className="text-xs text-slate-400">{hint}</span>}
+          </label>
+        ))}
+      </div>
+      <button className="btn btn-primary mt-6" disabled={busy} onClick={save}>{busy ? '保存中...' : '保存设置'}</button>
+    </div>
+  </div>;
+}
+
+function SecurityPage(){ return <div className="card p-6 leading-8 text-slate-700"><h2 className="text-xl font-black text-slate-950">安全说明</h2><p className="mt-4"><b>两步验证（TOTP）：</b>支持 TOTP 两步验证，启用后登录需提供动态验证码，密钥通过 PBKDF2 安全存储。</p><p><b>密码安全：</b>用户密码使用 PBKDF2 加盐哈希存储，不可逆，面板不会以明文保存密码。</p><p><b>会话管理：</b>基于 Cookie 的会话认证，Cookie 设置 SameSite=Lax 防 CSRF，会话绑定服务端存储并支持强制下线。</p><p><b>节点接入：</b>Agent 注册使用一次性 Token，注册后即失效。后续心跳使用节点密钥签名，无需传输密码。</p><p><b>防火墙托管：</b>严格模式会先进入 60 秒待确认窗口；管理员需在面板确认后才长期保持，未确认时 Agent 自动回滚至宽松模式，确保 SSH 不丢失。</p><p><b>设置接口安全：</b>系统设置 API 仅接受白名单内的键名，Webhook URL 经过 SSRF 防护校验，禁止指向内网地址。</p><p><b>前端安全：</b>不使用 CDN，不加载远程字体或第三方统计脚本，所有前端资源编译后内嵌到 Go 二进制中，无外部依赖。</p></div>; }
+
+function ModalHost({ modal, setModal, nodes, users, currentUser, setUser, refreshAll, toast }: any) {
   if (!modal) return null;
   const close = () => setModal(null);
   return <div className="fixed inset-0 z-50 grid place-items-center bg-slate-950/40 p-4 backdrop-blur-sm animate-fade-in" onMouseDown={e => { if (e.target === e.currentTarget) close(); }}>
@@ -595,7 +675,7 @@ function ModalHost({ modal, setModal, nodes, users, currentUser, refreshAll, toa
     {modal.kind === 'node-detail' && <Drawer title={`节点详情：${modal.node.name}`} close={close}><NodeDetail node={modal.node} /></Drawer>}
     {modal.kind === 'rule-detail' && <Drawer title={`规则详情：${modal.rule.name}`} close={close}><RuleDetail rule={modal.rule} nodes={nodes} users={users} /></Drawer>}
     {modal.kind === 'user' && <UserModal user={modal.user} nodes={nodes} close={close} toast={toast} refreshAll={refreshAll} />}
-    {modal.kind === 'totp' && <TotpModal close={close} toast={toast} />}
+    {modal.kind === 'totp' && <TotpModal close={close} toast={toast} user={currentUser} setUser={setUser} />}
   </div>;
 }
 
@@ -615,14 +695,95 @@ function TokenModal({ close, toast, refreshAll }: any) { const [result, setResul
   return <div className="card w-full max-w-2xl p-6 animate-slide-up"><div className="flex justify-between"><div><h2 className="text-xl font-black">生成节点接入 Token</h2><p className="muted mt-1">生成后只显示一次，请立即复制。</p></div><button className="btn" onClick={close}>关闭</button></div><form onSubmit={submit} className="field-grid mt-5"><label className="label">节点名称<input className="input" name="name" defaultValue="新转发节点" required /></label><label className="label">有效期<select className="input" name="hours" defaultValue="24"><option value="1">1 小时</option><option value="6">6 小时</option><option value="24">24 小时</option><option value="72">3 天</option><option value="168">7 天</option></select></label><button className="btn btn-primary md:col-span-2">生成 Token</button></form>{result && <div className="mt-5 grid gap-4"><CopyBox title="一次性 Token" value={result.token}/><CopyBox title="节点安装命令" value={result.cmd}/></div>}</div> }
 function CopyBox({title,value}:{title:string;value:string}){ return <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4"><div className="mb-2 font-bold">{title}</div><textarea className="input min-h-24 font-mono" readOnly value={value} onFocus={e=>e.currentTarget.select()} /></div> }
 
-function RuleModal({ rule, nodes, users, currentUser, close, toast, refreshAll }: any) { async function submit(e: React.FormEvent<HTMLFormElement>){ e.preventDefault(); const fd = Object.fromEntries(new FormData(e.currentTarget)); let exp = null; if (fd.expire_at) { const d = new Date(String(fd.expire_at)); d.setHours(23,59,59,999); exp = d.toISOString(); } const payload:any = { ...rule, ...fd, user_id: users.length ? fd.user_id : (rule?.user_id || currentUser?.id), listen_port:+String(fd.listen_port), target_port:+String(fd.target_port), speed_limit_mbps:+String(fd.speed_limit_mbps||0), max_connections:+String(fd.max_connections||0), traffic_limit:Math.round((+String(fd.traffic_limit_gb||0))*1024*1024*1024), expire_at:exp, enabled:fd.enabled === 'true', firewall_managed:true, source_cidrs: String(fd.source_cidrs || '').split(',').map(x=>x.trim()).filter(Boolean) }; delete payload.traffic_limit_gb; await api(rule?.id ? `/api/rules/${rule.id}` : '/api/rules', { method: rule?.id ? 'PUT':'POST', body: JSON.stringify(payload) }); toast('规则已保存'); close(); await refreshAll(true); }
-  return <div className="card max-h-[90vh] w-full max-w-3xl overflow-auto p-6 animate-slide-up"><div className="flex justify-between"><h2 className="text-xl font-black">{rule?.id?'编辑':'新增'}转发规则</h2><button className="btn" onClick={close}>关闭</button></div><form onSubmit={submit} className="field-grid mt-5"><label className="label">规则名称<input className="input" name="name" defaultValue={rule?.name || ''} required /></label><label className="label">节点<select className="input" name="node_id" defaultValue={rule?.node_id || nodes[0]?.id}>{nodes.map((n:NodeItem)=><option key={n.id} value={n.id}>{n.name}</option>)}</select></label>{users.length>0 && <label className="label">所属用户<select className="input" name="user_id" defaultValue={rule?.user_id || users[0]?.id}>{users.map((u:User)=><option key={u.id} value={u.id}>{u.username}（{roleText(u.role)}）</option>)}</select></label>}<label className="label">协议<select className="input" name="protocol" defaultValue={rule?.protocol || 'tcp'}><option value="tcp">TCP</option><option value="udp">UDP</option><option value="both">TCP + UDP</option></select></label><label className="label">监听端口<input className="input" type="number" name="listen_port" defaultValue={rule?.listen_port || ''} required /></label><label className="label">目标端口<input className="input" type="number" name="target_port" defaultValue={rule?.target_port || ''} required /></label><label className="label md:col-span-2">目标地址<input className="input" name="target_host" defaultValue={rule?.target_host || ''} required /></label><label className="label">限速 Mbps<input className="input" name="speed_limit_mbps" type="number" defaultValue={rule?.speed_limit_mbps || 0} /></label><label className="label">最大连接数<input className="input" name="max_connections" type="number" defaultValue={rule?.max_connections || 0} /></label><label className="label">状态<select className="input" name="enabled" defaultValue={String(rule?.enabled ?? true)}><option value="true">启用</option><option value="false">停用</option></select></label><label className="label">规则流量上限 GB<input className="input" name="traffic_limit_gb" type="number" defaultValue={rule?.traffic_limit ? Math.round(Number(rule.traffic_limit)/1024/1024/1024) : 0} /></label><label className="label">到期日期<input className="input" name="expire_at" type="date" defaultValue={(rule?.expire_at || '').slice(0,10)} /></label><label className="label md:col-span-2">来源 IP/CIDR 白名单<input className="input" name="source_cidrs" defaultValue={(rule?.source_cidrs || []).join(', ')} /></label><label className="label md:col-span-2">备注<textarea className="input" name="description" defaultValue={rule?.description || ''} /></label><button className="btn btn-primary md:col-span-2">保存</button></form></div> }
+function RuleModal({ rule, nodes, users, currentUser, close, toast, refreshAll }: any) { async function submit(e: React.FormEvent<HTMLFormElement>){ e.preventDefault(); const fd = Object.fromEntries(new FormData(e.currentTarget)); let exp = null; if (fd.expire_at) { const d = new Date(String(fd.expire_at)); d.setHours(23,59,59,999); exp = d.toISOString(); } const payload:any = { ...rule, ...fd, user_id: users.length ? fd.user_id : (rule?.user_id || currentUser?.id), listen_port:+String(fd.listen_port), target_port:+String(fd.target_port), speed_limit_mbps:+String(fd.speed_limit_mbps||0), max_connections:+String(fd.max_connections||0), traffic_limit:Math.round((+String(fd.traffic_limit_gb||0))*1024*1024*1024), expire_at:exp, enabled:fd.enabled === 'true', firewall_managed:true, source_cidrs: String(fd.source_cidrs || '').split(',').map(x=>x.trim()).filter(Boolean), tags: String(fd.tags || '').split(',').map(x=>x.trim()).filter(Boolean) }; delete payload.traffic_limit_gb; await api(rule?.id ? `/api/rules/${rule.id}` : '/api/rules', { method: rule?.id ? 'PUT':'POST', body: JSON.stringify(payload) }); toast('规则已保存'); close(); await refreshAll(true); }
+  return <div className="card max-h-[90vh] w-full max-w-3xl overflow-auto p-6 animate-slide-up"><div className="flex justify-between"><h2 className="text-xl font-black">{rule?.id?'编辑':'新增'}转发规则</h2><button className="btn" onClick={close}>关闭</button></div><form onSubmit={submit} className="field-grid mt-5"><label className="label">规则名称<input className="input" name="name" defaultValue={rule?.name || ''} required /></label><label className="label">节点<select className="input" name="node_id" defaultValue={rule?.node_id || nodes[0]?.id}>{nodes.map((n:NodeItem)=><option key={n.id} value={n.id}>{n.name}</option>)}</select></label>{users.length>0 && <label className="label">所属用户<select className="input" name="user_id" defaultValue={rule?.user_id || users[0]?.id}>{users.map((u:User)=><option key={u.id} value={u.id}>{u.username}（{roleText(u.role)}）</option>)}</select></label>}<label className="label">协议<select className="input" name="protocol" defaultValue={rule?.protocol || 'tcp'}><option value="tcp">TCP</option><option value="udp">UDP</option><option value="both">TCP + UDP</option></select></label><label className="label">监听端口<input className="input" type="number" name="listen_port" defaultValue={rule?.listen_port || ''} required /></label><label className="label">目标端口<input className="input" type="number" name="target_port" defaultValue={rule?.target_port || ''} required /></label><label className="label md:col-span-2">目标地址<input className="input" name="target_host" defaultValue={rule?.target_host || ''} required /></label><label className="label">限速 Mbps<input className="input" name="speed_limit_mbps" type="number" defaultValue={rule?.speed_limit_mbps || 0} /></label><label className="label">最大连接数<input className="input" name="max_connections" type="number" defaultValue={rule?.max_connections || 0} /></label><label className="label">状态<select className="input" name="enabled" defaultValue={String(rule?.enabled ?? true)}><option value="true">启用</option><option value="false">停用</option></select></label><label className="label">规则流量上限 GB<input className="input" name="traffic_limit_gb" type="number" defaultValue={rule?.traffic_limit ? Math.round(Number(rule.traffic_limit)/1024/1024/1024) : 0} /></label><label className="label">到期日期<input className="input" name="expire_at" type="date" defaultValue={(rule?.expire_at || '').slice(0,10)} /></label><label className="label md:col-span-2">来源 IP/CIDR 白名单<input className="input" name="source_cidrs" defaultValue={(rule?.source_cidrs || []).join(', ')} /></label><label className="label md:col-span-2">标签（逗号分隔）<input className="input" name="tags" defaultValue={(rule?.tags || []).join(', ')} placeholder="例如：生产环境,重要服务" /></label><label className="label md:col-span-2">备注<textarea className="input" name="description" defaultValue={rule?.description || ''} /></label><button className="btn btn-primary md:col-span-2">保存</button></form></div> }
 
 function UserModal({ user, nodes, close, toast, refreshAll }: any) { async function submit(e:React.FormEvent<HTMLFormElement>){ e.preventDefault(); const fd = new FormData(e.currentTarget); const payload:any = { id:user?.id, username:fd.get('username'), password:fd.get('password') || '', role:fd.get('role'), rule_limit:+String(fd.get('rule_limit')||0), traffic_limit:Math.round((+String(fd.get('traffic_limit_gb')||0))*1024*1024*1024), port_range_start:+String(fd.get('port_range_start')||0), port_range_end:+String(fd.get('port_range_end')||0), expires_at:fd.get('expires_at') || '', disabled:fd.get('disabled')==='true', must_change:fd.get('must_change')==='true', allowed_node_ids:fd.getAll('allowed_node_ids') }; await api(user?.id ? `/api/users/${user.id}` : '/api/users', { method: user?.id ? 'PUT':'POST', body: JSON.stringify(payload) }); toast('用户已保存'); close(); await refreshAll(true); }
   const allowed = new Set(user?.allowed_node_ids || []); return <div className="card max-h-[90vh] w-full max-w-3xl overflow-auto p-6 animate-slide-up"><div className="flex justify-between"><h2 className="text-xl font-black">{user?.id?'编辑':'新增'}用户</h2><button className="btn" onClick={close}>关闭</button></div><form onSubmit={submit} className="field-grid mt-5"><label className="label">用户名<input className="input" name="username" defaultValue={user?.username||''} required /></label><label className="label">角色<select className="input" name="role" defaultValue={user?.role||'user'}><option value="user">普通用户</option><option value="admin">管理员</option><option value="super_admin">超级管理员</option></select></label><label className="label md:col-span-2">密码{user?.id?'（留空不修改）':''}<input className="input" type="password" name="password" /></label><label className="label">规则数量上限<input className="input" type="number" name="rule_limit" defaultValue={user?.rule_limit||0} /></label><label className="label">总流量额度 GB<input className="input" type="number" name="traffic_limit_gb" defaultValue={user?.traffic_limit ? Math.round(Number(user.traffic_limit)/1024/1024/1024) : 0} /></label><label className="label">端口范围开始<input className="input" type="number" name="port_range_start" defaultValue={user?.port_range_start||0} /></label><label className="label">端口范围结束<input className="input" type="number" name="port_range_end" defaultValue={user?.port_range_end||0} /></label><label className="label">到期日期<input className="input" type="date" name="expires_at" defaultValue={(user?.expires_at||'').slice(0,10)} /></label><label className="label">账号状态<select className="input" name="disabled" defaultValue={String(user?.disabled||false)}><option value="false">正常</option><option value="true">禁用</option></select></label><label className="label md:col-span-2"><span>允许使用的节点（全不选表示不限制）</span><div className="grid gap-2 rounded-2xl bg-slate-50 p-4">{nodes.map((n:NodeItem)=><label key={n.id} className="flex gap-2 text-sm"><input type="checkbox" name="allowed_node_ids" value={n.id} defaultChecked={allowed.has(n.id)} />{n.name}</label>)}</div></label><label className="flex gap-2 text-sm md:col-span-2"><input type="checkbox" name="must_change" value="true" defaultChecked={user?.must_change} />下次登录必须修改密码</label><button className="btn btn-primary md:col-span-2">保存</button></form></div> }
 function NodeDetail({ node }: { node: NodeItem }) { const fw = firewallStatus(node); const m = node.last_metrics || {}; return <div className="grid gap-4"><Info title="状态" value={online(node)?'在线':'离线'} /><Info title="公网 IP" value={node.public_ip||'-'} /><Info title="系统" value={`${node.os||'-'} / ${node.arch||'-'}`} /><Info title="Agent" value={node.agent_version||'-'} /><Info title="最近心跳" value={fmtDate(node.last_seen_at)} /><Info title="防火墙" value={`${fw.text}${fw.note ? ' · ' + fw.note : ''}`} /><Info title="端口范围" value={`${node.port_range_start || '-'} - ${node.port_range_end || '-'}`} /><Info title="内存" value={`${fmtBytes(m.memory_used)} / ${fmtBytes(m.memory_total)}`} /></div>; }
 function RuleDetail({ rule, nodes, users }: any) { const [tests, setTests] = useState<ConnectivityTest[]>([]); useEffect(()=>{ api<{items:ConnectivityTest[]}>(`/api/connectivity-tests?rule_id=${encodeURIComponent(rule.id)}&limit=20`).then(d=>setTests(d.items||[])).catch(()=>{}); }, [rule.id]); const nodeName = nodes.find((n:NodeItem)=>n.id===rule.node_id)?.name || rule.node_id; const owner = users.find((u:User)=>u.id===rule.user_id)?.username || rule.user_id; return <div className="grid gap-4"><Info title="协议" value={protocolText(rule.protocol)} /><Info title="监听" value={`${nodeName} :${rule.listen_port}`} /><Info title="目标" value={`${rule.target_host}:${rule.target_port}`} /><Info title="来源白名单" value={(rule.source_cidrs||[]).join(', ') || '不限'} /><Info title="规则流量" value={`${fmtBytes(rule.traffic_used)}${rule.traffic_limit ? ' / ' + fmtBytes(rule.traffic_limit) : ' / 不限'}`} /><Info title="归属用户" value={owner} /><h3 className="mt-3 font-black">检测历史</h3>{tests.map(t=><div key={t.id} className="rounded-2xl bg-slate-50 p-3"><b>{t.status}</b><div className="muted">{fmtDate(t.created_at)} · TCP {t.target_tcp_ok?'正常':'-'} · UDP {t.target_udp_ok?'已发送':'-'} · Ping {t.ping_ok ? `${t.ping_latency_ms||0} ms` : '-'}</div>{t.error && <div className="text-rose-600">{t.error}</div>}</div>)}</div>; }
 function Info({ title, value }: { title:string; value:React.ReactNode }) { return <div className="rounded-2xl bg-slate-50 p-4"><div className="text-xs font-bold uppercase tracking-wider text-slate-400">{title}</div><div className="mt-1 font-semibold text-slate-800">{value}</div></div>; }
-function TotpModal({ close, toast }: any){ return <div className="card w-full max-w-xl p-6 animate-slide-up"><div className="flex justify-between"><h2 className="text-xl font-black">两步验证</h2><button className="btn" onClick={close}>关闭</button></div><p className="muted mt-3">TOTP 启用/关闭功能仍沿用后端 API。后续可继续增强二维码展示。</p><button className="btn mt-4" onClick={()=>{toast('请在账号安全页启用两步验证流程'); close();}}>知道了</button></div> }
+function TotpModal({ close, toast, user, setUser }: any) {
+  const [step, setStep] = useState<'choose' | 'setup' | 'verify' | 'disable'>('choose');
+  const [secret, setSecret] = useState('');
+  const [uri, setUri] = useState('');
+  const [password, setPassword] = useState('');
+  const [code, setCode] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  if (user?.totp_enabled && step === 'choose') {
+    return <div className="card w-full max-w-xl p-6 animate-slide-up">
+      <div className="flex justify-between"><h2 className="text-xl font-black">两步验证管理</h2><button className="btn" onClick={close}>关闭</button></div>
+      <p className="muted mt-3">两步验证已启用。关闭后账号安全性将降低。</p>
+      <div className="mt-5 grid gap-4">
+        <label className="label">当前密码<input className="input" type="password" value={password} onChange={e => setPassword(e.target.value)} required /></label>
+        <label className="label">两步验证码<input className="input" inputMode="numeric" placeholder="输入验证器中的6位数字" value={code} onChange={e => setCode(e.target.value)} required /></label>
+        <button className="btn btn-danger" disabled={busy || !password || !code} onClick={async () => {
+          setBusy(true);
+          try {
+            const d = await api<{ ok: boolean; user: User }>('/api/account/totp/disable', { method: 'POST', body: JSON.stringify({ password, code }) });
+            setUser(d.user);
+            toast('两步验证已关闭');
+            close();
+          } catch (err: any) { toast(err.message || '操作失败', 'danger'); } finally { setBusy(false); }
+        }}>{busy ? '处理中...' : '关闭两步验证'}</button>
+      </div>
+    </div>;
+  }
+
+  if (step === 'setup') {
+    return <div className="card w-full max-w-xl p-6 animate-slide-up">
+      <div className="flex justify-between"><h2 className="text-xl font-black">启用两步验证 - 第2步</h2><button className="btn" onClick={close}>取消</button></div>
+      <p className="muted mt-3">请使用验证器应用（如 Google Authenticator、Microsoft Authenticator）扫描下方链接或手动输入密钥。</p>
+      <div className="mt-4 grid gap-4">
+        <div className="rounded-2xl bg-slate-50 p-4">
+          <div className="text-xs font-bold text-slate-500 mb-2">验证器链接（点击可复制）</div>
+          <textarea className="input min-h-20 font-mono text-xs break-all" readOnly value={uri} onClick={e => { (e.target as HTMLTextAreaElement).select(); copyText(uri, toast); }} />
+        </div>
+        <div className="rounded-2xl bg-slate-50 p-4">
+          <div className="text-xs font-bold text-slate-500 mb-2">手动输入密钥</div>
+          <div className="flex items-center gap-2">
+            <code className="rounded-xl bg-white px-3 py-2 text-sm font-bold tracking-widest">{secret}</code>
+            <button className="btn btn-xs" onClick={() => copyText(secret, toast)}>复制</button>
+          </div>
+        </div>
+        <div className="rounded-2xl bg-amber-50 p-4 text-sm text-amber-800">请确保已将验证器设置完成后再继续，启用后需要输入验证码才能完成。</div>
+        <label className="label">当前密码<input className="input" type="password" value={password} onChange={e => setPassword(e.target.value)} required /></label>
+        <label className="label">验证码<input className="input" inputMode="numeric" placeholder="输入验证器中的6位数字" value={code} onChange={e => setCode(e.target.value)} required /></label>
+        <button className="btn btn-primary" disabled={busy || !password || !code} onClick={async () => {
+          setBusy(true);
+          try {
+            const d = await api<{ ok: boolean; user: User }>('/api/account/totp/enable', { method: 'POST', body: JSON.stringify({ password, code }) });
+            setUser(d.user);
+            toast('两步验证已启用！其他登录会话已注销');
+            close();
+          } catch (err: any) { toast(err.message || '启用失败', 'danger'); } finally { setBusy(false); }
+        }}>{busy ? '验证中...' : '确认启用'}</button>
+      </div>
+    </div>;
+  }
+
+  return <div className="card w-full max-w-xl p-6 animate-slide-up">
+    <div className="flex justify-between"><h2 className="text-xl font-black">启用两步验证 - 第1步</h2><button className="btn" onClick={close}>取消</button></div>
+    <p className="muted mt-3">启用两步验证后，登录时除了密码还需要输入动态验证码，显著提升账号安全性。</p>
+    <div className="mt-5 rounded-2xl bg-slate-50 p-4 text-sm text-slate-600">
+      <div className="font-bold text-slate-800">步骤说明：</div>
+      <ol className="mt-2 grid gap-1 list-decimal pl-5">
+        <li>点击下方按钮生成两步验证密钥</li>
+        <li>使用验证器应用扫描或手动输入密钥</li>
+        <li>输入当前密码和验证码完成启用</li>
+      </ol>
+    </div>
+    <button className="btn btn-primary mt-5" disabled={busy} onClick={async () => {
+      setBusy(true);
+      try {
+        const d = await api<{ secret: string; uri: string }>('/api/account/totp/setup', { method: 'POST' });
+        setSecret(d.secret);
+        setUri(d.uri);
+        setStep('setup');
+      } catch (err: any) { toast(err.message || '生成密钥失败', 'danger'); } finally { setBusy(false); }
+    }}>{busy ? '生成中...' : '生成两步验证密钥'}</button>
+  </div>;
+}
 
 createRoot(document.getElementById('root')!).render(<App />);
