@@ -1,5 +1,31 @@
-
-
 # RelayGuard frontend
 frontend/node_modules/
 frontend/dist/
+
+# Binaries
+relayguard-panel
+relayguard-agent
+
+# Data directory
+data/
+
+# SQLite database files
+*.db
+*.db-wal
+*.db-shm
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Build artifacts
+dist/
+# Old frontend backup
+web_old/

@@ -75,6 +75,13 @@ func VerifyHMACSHA256Hex(secret string, data []byte, signature string) bool {
 	return subtle.ConstantTimeCompare([]byte(expected), []byte(signature)) == 1
 }
 
+// NodeSecretHMAC returns an HMAC-SHA256 digest of the node secret using a
+// server-level key. This is reserved for a future migration where node secrets
+// will be stored as HMAC digests rather than plaintext.
+func NodeSecretHMAC(serverKey, secret string) string {
+	return HMACSHA256Hex(serverKey, []byte(secret))
+}
+
 func pbkdf2SHA256(password, salt []byte, iter, keyLen int) []byte {
 	hLen := 32
 	numBlocks := (keyLen + hLen - 1) / hLen

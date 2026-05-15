@@ -28,12 +28,18 @@ func (s *Store) ensureTrafficSnapshotSchemaLocked() error {
 	return nil
 }
 
-func (s *Store) StartTrafficSnapshotLoop() {
+func (s *Store) StartTrafficSnapshotLoop(stopCh <-chan struct{}) {
 	_ = s.CaptureTrafficSnapshot()
 
 	ticker := time.NewTicker(5 * time.Minute)
-	for range ticker.C {
-		_ = s.CaptureTrafficSnapshot()
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			_ = s.CaptureTrafficSnapshot()
+		case <-stopCh:
+			return
+		}
 	}
 }
 

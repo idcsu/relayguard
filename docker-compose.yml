@@ -8,8 +8,35 @@ services:
     ports:
       - "7080:7080"
     volumes:
-      - ./data:/app/data
+      - panel-data:/app/data
     environment:
       - TZ=Asia/Shanghai
       # 首次初始化可指定管理员密码；留空则随机生成并打印到日志
       # - ADMIN_PASSWORD=请改成强密码
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:7080/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  relayguard-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile.agent
+    container_name: relayguard-agent
+    restart: unless-stopped
+    environment:
+      - RELAYGUARD_PANEL=http://relayguard-panel:7080
+      - RELAYGUARD_TOKEN=change-me
+      - RELAYGUARD_SSH_PORTS=22
+      # - RELAYGUARD_NODE_NAME=节点名称
+      # - RELAYGUARD_ALLOW_TCP=
+      # - RELAYGUARD_ALLOW_UDP=
+    depends_on:
+      relayguard-panel:
+        condition: service_healthy
+    network_mode: host
+
+volumes:
+  panel-data:

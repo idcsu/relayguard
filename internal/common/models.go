@@ -5,7 +5,7 @@ import "time"
 const (
 	ProjectName   = "RelayGuard"
 	ProjectNameCN = "中转卫士"
-	Version       = "0.13.0"
+	Version       = "0.18.1"
 )
 
 type User struct {
@@ -92,6 +92,7 @@ type ForwardRule struct {
 	ExpireAt        *time.Time `json:"expire_at,omitempty"`
 	Description     string     `json:"description"`
 	FirewallManaged bool       `json:"firewall_managed"`
+	Tags            []string   `json:"tags"`
 	CreatedAt       time.Time  `json:"created_at"`
 	UpdatedAt       time.Time  `json:"updated_at"`
 }

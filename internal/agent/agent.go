@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/idcsu/relayguard/internal/common"
@@ -37,13 +38,14 @@ type Agent struct {
 	mgr         *Manager
 	client      *http.Client
 	lastErr     string
+	stopCh      chan struct{}
 	testMu      sync.Mutex
 	testResults []common.ConnectivityTestResult
 }
 
 func New(cfg Config) *Agent {
 	fwCfg := FirewallConfig{SSHPorts: cfg.SSHPorts, ExtraAllowTCP: cfg.ExtraAllowTCP, ExtraAllowUDP: cfg.ExtraAllowUDP, AllowICMP: cfg.FirewallICMP}
-	return &Agent{cfg: cfg, mgr: NewManager(cfg.DataDir, fwCfg), client: &http.Client{Timeout: 20 * time.Second}}
+	return &Agent{cfg: cfg, mgr: NewManager(cfg.DataDir, fwCfg), client: &http.Client{Timeout: 20 * time.Second}, stopCh: make(chan struct{})}
 }
 
 func LoadConfig(dataDir string) (Config, error) {
@@ -68,6 +70,10 @@ func (a *Agent) SaveConfig() error {
 		return err
 	}
 	return os.WriteFile(filepath.Join(a.cfg.DataDir, "agent.json"), b, 0600)
+}
+
+func (a *Agent) Stop() {
+	close(a.stopCh)
 }
 
 func (a *Agent) Run() error {
@@ -96,20 +102,35 @@ func (a *Agent) Run() error {
 		log.Printf("已按上次成功配置恢复 %d 条转发规则", len(last))
 	}
 	log.Printf("RelayGuard Agent 已启动，节点 ID：%s，面板：%s", a.cfg.NodeID, a.cfg.PanelURL)
-	ticker := time.NewTicker(10 * time.Second)
+	const baseInterval = 10 * time.Second
+	const maxInterval = 5 * time.Minute
+	interval := baseInterval
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
-	if err := a.heartbeatOnce(); err != nil {
-		log.Printf("首次心跳失败：%v", err)
-	}
-	for range ticker.C {
-		if err := a.heartbeatOnce(); err != nil {
-			a.lastErr = err.Error()
-			log.Printf("心跳失败：%v", err)
-		} else {
-			a.lastErr = ""
+	for {
+		select {
+		case <-ticker.C:
+			if err := a.heartbeatOnce(); err != nil {
+				a.lastErr = err.Error()
+				log.Printf("心跳失败：%v", err)
+				interval = interval * 2
+				if interval > maxInterval {
+					interval = maxInterval
+				}
+				ticker.Reset(interval)
+			} else {
+				a.lastErr = ""
+				if interval != baseInterval {
+					interval = baseInterval
+					ticker.Reset(baseInterval)
+				}
+			}
+		case <-a.stopCh:
+			log.Printf("Agent 正在关闭...")
+			a.mgr.Stop()
+			return nil
 		}
 	}
-	return nil
 }
 
 func (a *Agent) Register() error {
@@ -217,6 +238,7 @@ func privateIPs() []string {
 func CollectMetrics() common.NodeMetrics {
 	m := common.NodeMetrics{}
 	m.Load1 = readLoad()
+	m.CPUPercent = readCPU()
 	m.MemoryTotal, m.MemoryUsed = readMem()
 	m.DiskTotal, m.DiskUsed = readDisk("/")
 	m.NetIn, m.NetOut = readNet()
@@ -235,6 +257,44 @@ func readLoad() float64 {
 	}
 	v, _ := strconv.ParseFloat(fields[0], 64)
 	return v
+}
+
+// readCPU returns the CPU usage percentage based on /proc/stat.
+// It reads two successive snapshots (100ms apart) to compute the active ratio.
+func readCPU() float64 {
+	readStat := func() (idle, total uint64) {
+		b, err := os.ReadFile("/proc/stat")
+		if err != nil {
+			return 0, 1
+		}
+		lines := strings.Split(string(b), "\n")
+		if len(lines) == 0 {
+			return 0, 1
+		}
+		fields := strings.Fields(lines[0])
+		if len(fields) < 5 || fields[0] != "cpu" {
+			return 0, 1
+		}
+		var vals [8]uint64
+		for i := 1; i < len(fields) && i <= 8; i++ {
+			v, _ := strconv.ParseUint(fields[i], 10, 64)
+			vals[i-1] = v
+		}
+		idle = vals[3] + vals[6] // idle + steal
+		for _, v := range vals {
+			total += v
+		}
+		return
+	}
+	idle1, total1 := readStat()
+	time.Sleep(100 * time.Millisecond)
+	idle2, total2 := readStat()
+	dIdle := idle2 - idle1
+	dTotal := total2 - total1
+	if dTotal == 0 {
+		return 0
+	}
+	return float64(dTotal-dIdle) / float64(dTotal) * 100
 }
 
 func readMem() (total, used uint64) {
@@ -260,8 +320,16 @@ func readMem() (total, used uint64) {
 }
 
 func readDisk(path string) (total, used uint64) {
-	// 为保持标准库无 cgo，这里暂不读取 statfs。后续版本会按系统实现。
-	return 0, 0
+	var stat syscall.Statfs_t
+	if err := syscall.Statfs(path, &stat); err != nil {
+		return 0, 0
+	}
+	total = stat.Blocks * uint64(stat.Bsize)
+	available := stat.Bavail * uint64(stat.Bsize)
+	if total > available {
+		used = total - available
+	}
+	return
 }
 
 func readNet() (in, out uint64) {

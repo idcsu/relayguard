@@ -1,14 +1,20 @@
 FROM golang:1.22-alpine AS builder
 RUN apk add --no-cache build-base sqlite-dev
 WORKDIR /src
-COPY . .
+COPY go.mod ./
+COPY internal/ internal/
+COPY cmd/ cmd/
+RUN go mod tidy 2>/dev/null || true
 RUN go build -trimpath -ldflags="-s -w" -o /out/relayguard-panel ./cmd/relayguard-panel
 
 FROM alpine:3.20
-RUN apk add --no-cache ca-certificates tzdata sqlite-libs && adduser -D -H -s /sbin/nologin relayguard
+RUN apk add --no-cache ca-certificates tzdata sqlite-libs wget && adduser -D -H -s /sbin/nologin relayguard
 WORKDIR /app
 COPY --from=builder /out/relayguard-panel /usr/local/bin/relayguard-panel
 USER relayguard
 EXPOSE 7080
+VOLUME ["/app/data"]
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD wget -q --spider http://127.0.0.1:7080/healthz || exit 1
 ENTRYPOINT ["/usr/local/bin/relayguard-panel"]
 CMD ["-addr", ":7080", "-data", "/app/data"]

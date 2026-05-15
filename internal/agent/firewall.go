@@ -36,7 +36,8 @@ type FirewallConfig struct {
 
 type FirewallManager struct {
 	mu       sync.Mutex
-	bin      string
+	bin      string // iptables path
+	bin6     string // ip6tables path
 	cfg      FirewallConfig
 	mode     string
 	state    string
@@ -70,6 +71,10 @@ func NewFirewallManager(cfg FirewallConfig) *FirewallManager {
 		fw.state = "unsupported"
 		fw.lastErr = "未找到 iptables，无法启用防火墙托管"
 	}
+	// ip6tables 是可选的：有就用，没有就跳过 IPv6 规则
+	if p, err := exec.LookPath("ip6tables"); err == nil {
+		fw.bin6 = p
+	}
 	return fw
 }
 
@@ -81,7 +86,6 @@ func normalizeFirewallConfig(cfg FirewallConfig) FirewallConfig {
 	cfg.ExtraAllowTCP = uniquePorts(cfg.ExtraAllowTCP)
 	cfg.ExtraAllowUDP = uniquePorts(cfg.ExtraAllowUDP)
 	if !cfg.AllowICMP {
-		// 默认允许 ping，避免严格模式下排障困难。历史配置中零值视为允许。
 		cfg.AllowICMP = true
 	}
 	if cfg.RollbackSeconds <= 0 {
@@ -252,68 +256,147 @@ func normalizeCIDRStrings(cidrs []string) []string {
 	return out
 }
 
+// isIPv6CIDR returns true if the CIDR looks like an IPv6 address/prefix.
+func isIPv6CIDR(cidr string) bool {
+	return strings.Contains(cidr, ":")
+}
+
 func (fw *FirewallManager) ensureChainLocked() error {
-	if err := fw.run("-N", relayGuardInputChain); err != nil && !strings.Contains(err.Error(), "Chain already exists") && !strings.Contains(err.Error(), "链已存在") {
+	// IPv4
+	if err := fw.run4("-N", relayGuardInputChain); err != nil && !strings.Contains(err.Error(), "Chain already exists") && !strings.Contains(err.Error(), "链已存在") {
 		return err
 	}
-	if err := fw.run("-C", "INPUT", "-j", relayGuardInputChain); err != nil {
-		// 插在第一条，让严格模式能先保护入口；链内会保留 SSH、已建立连接和托管端口。
-		if err := fw.run("-I", "INPUT", "1", "-j", relayGuardInputChain); err != nil {
+	if err := fw.run4("-C", "INPUT", "-j", relayGuardInputChain); err != nil {
+		if err := fw.run4("-I", "INPUT", "1", "-j", relayGuardInputChain); err != nil {
 			return err
 		}
+	}
+	// IPv6 (best-effort)
+	if fw.bin6 != "" {
+		_ = fw.run6("-N", relayGuardInputChain)
+		_ = fw.run6("-C", "INPUT", "-j", relayGuardInputChain)
+		_ = fw.run6("-I", "INPUT", "1", "-j", relayGuardInputChain)
 	}
 	return nil
 }
 
 func (fw *FirewallManager) flushChainLocked() error {
-	return fw.run("-F", relayGuardInputChain)
+	_ = fw.run4("-F", relayGuardInputChain)
+	if fw.bin6 != "" {
+		_ = fw.run6("-F", relayGuardInputChain)
+	}
+	return nil
 }
 
 func (fw *FirewallManager) populateChainLocked(mode string, rules []firewallPortRule) error {
-	// 放行已经建立的连接，避免严格模式影响 Agent 到面板的回包和已有 SSH 会话。
-	_ = fw.run("-A", relayGuardInputChain, "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "ACCEPT")
-	_ = fw.run("-A", relayGuardInputChain, "-m", "state", "--state", "ESTABLISHED,RELATED", "-j", "ACCEPT")
-	_ = fw.run("-A", relayGuardInputChain, "-i", "lo", "-j", "ACCEPT")
+	// === IPv4 rules ===
+	_ = fw.run4("-A", relayGuardInputChain, "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "ACCEPT")
+	_ = fw.run4("-A", relayGuardInputChain, "-m", "state", "--state", "ESTABLISHED,RELATED", "-j", "ACCEPT")
+	_ = fw.run4("-A", relayGuardInputChain, "-i", "lo", "-j", "ACCEPT")
 	if fw.cfg.AllowICMP {
-		_ = fw.run("-A", relayGuardInputChain, "-p", "icmp", "-j", "ACCEPT")
+		_ = fw.run4("-A", relayGuardInputChain, "-p", "icmp", "-j", "ACCEPT")
 	}
 	for _, p := range fw.cfg.SSHPorts {
-		if err := fw.addAcceptPort("tcp", p, nil); err != nil {
+		if err := fw.addAcceptPort4("tcp", p, nil); err != nil {
 			return err
 		}
 	}
 	for _, p := range fw.cfg.ExtraAllowTCP {
-		if err := fw.addAcceptPort("tcp", p, nil); err != nil {
+		if err := fw.addAcceptPort4("tcp", p, nil); err != nil {
 			return err
 		}
 	}
 	for _, p := range fw.cfg.ExtraAllowUDP {
-		if err := fw.addAcceptPort("udp", p, nil); err != nil {
+		if err := fw.addAcceptPort4("udp", p, nil); err != nil {
 			return err
 		}
 	}
 	for _, r := range rules {
-		if err := fw.addAcceptPort(r.Proto, r.Port, r.CIDRs); err != nil {
+		ipv4CIDRs := filterCIDRs(r.CIDRs, false)
+		if err := fw.addAcceptPort4(r.Proto, r.Port, ipv4CIDRs); err != nil {
 			return err
 		}
 	}
 	if mode == firewallModeStrict {
-		// 严格托管：未命中上述放行规则的入站流量全部丢弃。
-		return fw.run("-A", relayGuardInputChain, "-j", "DROP")
+		if err := fw.run4("-A", relayGuardInputChain, "-j", "DROP"); err != nil {
+			return err
+		}
+	} else {
+		_ = fw.run4("-A", relayGuardInputChain, "-j", "RETURN")
 	}
-	// 宽松托管：只确保转发端口被放行，其他入站流量继续交给系统原有防火墙规则处理。
-	return fw.run("-A", relayGuardInputChain, "-j", "RETURN")
+
+	// === IPv6 rules ===
+	if fw.bin6 != "" {
+		_ = fw.run6("-A", relayGuardInputChain, "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "ACCEPT")
+		_ = fw.run6("-A", relayGuardInputChain, "-m", "state", "--state", "ESTABLISHED,RELATED", "-j", "ACCEPT")
+		_ = fw.run6("-A", relayGuardInputChain, "-i", "lo", "-j", "ACCEPT")
+		if fw.cfg.AllowICMP {
+			_ = fw.run6("-A", relayGuardInputChain, "-p", "ipv6-icmp", "-j", "ACCEPT")
+		}
+		for _, p := range fw.cfg.SSHPorts {
+			if err := fw.addAcceptPort6("tcp", p, nil); err != nil {
+				return err
+			}
+		}
+		for _, p := range fw.cfg.ExtraAllowTCP {
+			if err := fw.addAcceptPort6("tcp", p, nil); err != nil {
+				return err
+			}
+		}
+		for _, p := range fw.cfg.ExtraAllowUDP {
+			if err := fw.addAcceptPort6("udp", p, nil); err != nil {
+				return err
+			}
+		}
+		for _, r := range rules {
+			ipv6CIDRs := filterCIDRs(r.CIDRs, true)
+			if err := fw.addAcceptPort6(r.Proto, r.Port, ipv6CIDRs); err != nil {
+				return err
+			}
+		}
+		if mode == firewallModeStrict {
+			if err := fw.run6("-A", relayGuardInputChain, "-j", "DROP"); err != nil {
+				return err
+			}
+		} else {
+			_ = fw.run6("-A", relayGuardInputChain, "-j", "RETURN")
+		}
+	}
+
+	return nil
 }
 
-func (fw *FirewallManager) addAcceptPort(proto string, port int, cidrs []string) error {
+// filterCIDRs returns IPv4 or IPv6 CIDRs based on wantIPv6 flag.
+func filterCIDRs(cidrs []string, wantIPv6 bool) []string {
+	if len(cidrs) == 0 {
+		return nil
+	}
+	var out []string
+	for _, c := range cidrs {
+		if isIPv6CIDR(c) == wantIPv6 {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+func (fw *FirewallManager) addAcceptPort4(proto string, port int, cidrs []string) error {
+	return fw.addAcceptPortWith(fw.run4, proto, port, cidrs)
+}
+
+func (fw *FirewallManager) addAcceptPort6(proto string, port int, cidrs []string) error {
+	return fw.addAcceptPortWith(fw.run6, proto, port, cidrs)
+}
+
+func (fw *FirewallManager) addAcceptPortWith(runFn func(args ...string) error, proto string, port int, cidrs []string) error {
 	if port < 1 || port > 65535 {
 		return nil
 	}
 	if len(cidrs) == 0 {
-		return fw.run("-A", relayGuardInputChain, "-p", proto, "--dport", strconv.Itoa(port), "-j", "ACCEPT")
+		return runFn("-A", relayGuardInputChain, "-p", proto, "--dport", strconv.Itoa(port), "-j", "ACCEPT")
 	}
 	for _, cidr := range cidrs {
-		if err := fw.run("-A", relayGuardInputChain, "-p", proto, "-s", cidr, "--dport", strconv.Itoa(port), "-j", "ACCEPT"); err != nil {
+		if err := runFn("-A", relayGuardInputChain, "-p", proto, "-s", cidr, "--dport", strconv.Itoa(port), "-j", "ACCEPT"); err != nil {
 			return err
 		}
 	}
@@ -362,16 +445,30 @@ func (fw *FirewallManager) Disable() error {
 }
 
 func (fw *FirewallManager) disableLocked() error {
+	// Clean up IPv4
 	for i := 0; i < 20; i++ {
-		if err := fw.run("-C", "INPUT", "-j", relayGuardInputChain); err != nil {
+		if err := fw.run4("-C", "INPUT", "-j", relayGuardInputChain); err != nil {
 			break
 		}
-		if err := fw.run("-D", "INPUT", "-j", relayGuardInputChain); err != nil {
+		if err := fw.run4("-D", "INPUT", "-j", relayGuardInputChain); err != nil {
 			return err
 		}
 	}
-	_ = fw.run("-F", relayGuardInputChain)
-	_ = fw.run("-X", relayGuardInputChain)
+	_ = fw.run4("-F", relayGuardInputChain)
+	_ = fw.run4("-X", relayGuardInputChain)
+
+	// Clean up IPv6
+	if fw.bin6 != "" {
+		for i := 0; i < 20; i++ {
+			if err := fw.run6("-C", "INPUT", "-j", relayGuardInputChain); err != nil {
+				break
+			}
+			_ = fw.run6("-D", "INPUT", "-j", relayGuardInputChain)
+		}
+		_ = fw.run6("-F", relayGuardInputChain)
+		_ = fw.run6("-X", relayGuardInputChain)
+	}
+
 	fw.state = firewallModeOff
 	fw.lastHash = ""
 	return nil
@@ -389,19 +486,40 @@ func (fw *FirewallManager) Dump() string {
 	if fw.bin == "" {
 		return fw.lastErr
 	}
-	out, err := fw.output("-S", relayGuardInputChain)
+	out, err := fw.output4("-S", relayGuardInputChain)
+	var b strings.Builder
 	if err != nil {
-		return err.Error()
+		b.WriteString("[IPv4 错误] " + err.Error() + "\n")
+	} else {
+		b.WriteString("=== IPv4 (iptables) ===\n")
+		b.WriteString(strings.TrimSpace(out) + "\n")
 	}
-	return out
+	if fw.bin6 != "" {
+		out6, err6 := fw.output6("-S", relayGuardInputChain)
+		if err6 != nil {
+			b.WriteString("[IPv6 错误] " + err6.Error() + "\n")
+		} else {
+			b.WriteString("=== IPv6 (ip6tables) ===\n")
+			b.WriteString(strings.TrimSpace(out6) + "\n")
+		}
+	}
+	return b.String()
 }
 
-func (fw *FirewallManager) run(args ...string) error {
-	_, err := fw.output(args...)
+func (fw *FirewallManager) run4(args ...string) error {
+	_, err := fw.output4(args...)
 	return err
 }
 
-func (fw *FirewallManager) output(args ...string) (string, error) {
+func (fw *FirewallManager) run6(args ...string) error {
+	if fw.bin6 == "" {
+		return nil
+	}
+	_, err := fw.output6(args...)
+	return err
+}
+
+func (fw *FirewallManager) output4(args ...string) (string, error) {
 	cmdArgs := append([]string{"-w"}, args...)
 	cmd := exec.Command(fw.bin, cmdArgs...)
 	var out bytes.Buffer
@@ -409,6 +527,21 @@ func (fw *FirewallManager) output(args ...string) (string, error) {
 	cmd.Stderr = &out
 	if err := cmd.Run(); err != nil {
 		return out.String(), fmt.Errorf("iptables %s: %s", strings.Join(args, " "), strings.TrimSpace(out.String()))
+	}
+	return out.String(), nil
+}
+
+func (fw *FirewallManager) output6(args ...string) (string, error) {
+	if fw.bin6 == "" {
+		return "", nil
+	}
+	cmdArgs := append([]string{"-w"}, args...)
+	cmd := exec.Command(fw.bin6, cmdArgs...)
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+	if err := cmd.Run(); err != nil {
+		return out.String(), fmt.Errorf("ip6tables %s: %s", strings.Join(args, " "), strings.TrimSpace(out.String()))
 	}
 	return out.String(), nil
 }

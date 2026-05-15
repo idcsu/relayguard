@@ -8,10 +8,14 @@ package panel
 import "C"
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net"
+	"net/http"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"sort"
@@ -25,7 +29,7 @@ import (
 )
 
 type Store struct {
-	mu   sync.Mutex
+	mu   sync.Mutex // TODO: Consider sync.RWMutex for better read concurrency. However, CGO SQLite operations (s.db.query/s.db.exec) are NOT thread-safe with the same connection, so exclusive locking is required for all DB access. Migrate away from CGO SQLite before using RWMutex.
 	path string
 	db   *sqliteDB
 }
@@ -203,6 +207,14 @@ func (d *sqliteDB) query(sql string, args ...any) ([]map[string]string, error) {
 	return rows, nil
 }
 
+func (d *sqliteDB) querySingleInt(sql string, args ...any) (int, error) {
+	rows, err := d.query(sql, args...)
+	if err != nil || len(rows) == 0 {
+		return 0, err
+	}
+	return atoi(rows[0]["COUNT(*)"]), nil
+}
+
 func OpenStore(path string, adminUser string, adminPassword string) (*Store, string, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return nil, "", err
@@ -283,6 +295,7 @@ func (s *Store) initSchema() error {
 		`CREATE INDEX IF NOT EXISTS idx_node_tokens_hash ON node_tokens(token_hash);`,
 		`CREATE TABLE IF NOT EXISTS forward_rules (id TEXT PRIMARY KEY, name TEXT NOT NULL, user_id TEXT, node_id TEXT NOT NULL, protocol TEXT NOT NULL, listen_port INTEGER NOT NULL, target_host TEXT NOT NULL, target_port INTEGER NOT NULL, enabled INTEGER NOT NULL DEFAULT 0, source_cidrs TEXT, speed_limit_mbps INTEGER, max_connections INTEGER, traffic_limit INTEGER, traffic_used INTEGER, expire_at TEXT, description TEXT, firewall_managed INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);`,
 		`CREATE INDEX IF NOT EXISTS idx_forward_rules_node_port ON forward_rules(node_id, listen_port);`,
+		`CREATE INDEX IF NOT EXISTS idx_forward_rules_user_id ON forward_rules(user_id);`,
 		`CREATE TABLE IF NOT EXISTS rule_statuses (rule_id TEXT PRIMARY KEY, state TEXT, protocol TEXT, listen_port INTEGER, active_connections INTEGER, bytes_in INTEGER, bytes_out INTEGER, last_error TEXT, updated_at TEXT NOT NULL);`,
 		`CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);`,
 		`CREATE TABLE IF NOT EXISTS audit_logs (id TEXT PRIMARY KEY, user_id TEXT, action TEXT NOT NULL, target TEXT, ip TEXT, detail TEXT, created_at TEXT NOT NULL);`,
@@ -303,6 +316,7 @@ func (s *Store) initSchema() error {
 		`ALTER TABLE users ADD COLUMN expires_at TEXT;`,
 		`ALTER TABLE users ADD COLUMN totp_enabled INTEGER NOT NULL DEFAULT 0;`,
 		`ALTER TABLE users ADD COLUMN totp_secret TEXT;`,
+		`ALTER TABLE forward_rules ADD COLUMN tags TEXT NOT NULL DEFAULT '[]';`,
 	} {
 		if err := s.db.execRaw(q); err != nil && !strings.Contains(strings.ToLower(err.Error()), "duplicate column") {
 			return err
@@ -313,10 +327,14 @@ func (s *Store) initSchema() error {
 
 func (s *Store) setDefaultSettingsLocked() error {
 	defaults := map[string]string{
-		"site_name":        "RelayGuard 中转卫士",
-		"agent_interval":   "10",
-		"install_base_url": "",
-		"storage_engine":   "sqlite",
+		"site_name":            "RelayGuard 中转卫士",
+		"agent_interval":      "10",
+		"install_base_url":    "",
+		"storage_engine":      "sqlite",
+		"session_ttl_hours":   "24",
+		"audit_retention_days": "90",
+		"webhook_url":         "",
+		"webhook_secret":      "",
 	}
 	for k, v := range defaults {
 		if err := s.db.exec(`INSERT OR IGNORE INTO settings(key,value) VALUES(?,?)`, k, v); err != nil {
@@ -433,13 +451,34 @@ func (s *Store) ResetAdminPassword(username, password string) error {
 	return s.insertAuditLocked(AuditLog{ID: common.RandomID("log"), UserID: "system", Action: "reset_admin_password", Target: username, IP: "local", Detail: "重置管理员密码并清空登录会话", CreatedAt: now})
 }
 
+// SessionTTL returns the configured session time-to-live duration.
+// It reads the "session_ttl_hours" setting (default 24 hours) and clamps
+// the value to [1, 8760] hours (1 hour to ~1 year).
+func (s *Store) SessionTTL() time.Duration {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rows, err := s.db.query(`SELECT value FROM settings WHERE key=?`, "session_ttl_hours")
+	if err != nil || len(rows) == 0 {
+		return 24 * time.Hour
+	}
+	hours := atoi(rows[0]["value"])
+	if hours <= 0 {
+		hours = 24
+	}
+	if hours > 8760 {
+		hours = 8760
+	}
+	return time.Duration(hours) * time.Hour
+}
+
 func (s *Store) CreateSession(user common.User, ip, ua string) (common.Session, error) {
 	token, err := common.RandomToken(32)
 	if err != nil {
 		return common.Session{}, err
 	}
 	now := time.Now()
-	sess := common.Session{Token: token, UserID: user.ID, IP: ip, UserAgent: ua, CreatedAt: now, ExpiresAt: now.Add(24 * time.Hour)}
+	ttl := s.SessionTTL()
+	sess := common.Session{Token: token, UserID: user.ID, IP: ip, UserAgent: ua, CreatedAt: now, ExpiresAt: now.Add(ttl)}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return sess, s.upsertSessionLocked(sess)
@@ -512,6 +551,12 @@ func (s *Store) GetUser(id string) (common.User, bool) {
 	return u, ok
 }
 
+func (s *Store) GetUserByID(id string) (common.User, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.userByIDLocked(id)
+}
+
 func (s *Store) SaveUser(u common.User, password string) (common.User, error) {
 	now := time.Now()
 	if strings.TrimSpace(u.Username) == "" {
@@ -536,22 +581,22 @@ func (s *Store) SaveUser(u common.User, password string) (common.User, error) {
 		u.TOTPEnabled = old.TOTPEnabled
 		u.TOTPSecret = old.TOTPSecret
 		if password != "" {
-			if len(password) < 8 {
-				return common.User{}, fmt.Errorf("密码至少需要 8 位")
-			}
-			hash, err := common.HashPassword(password)
-			if err != nil {
-				return common.User{}, err
-			}
-			u.PasswordHash = hash
-			u.MustChange = false
+		if err := validatePasswordStrength(password); err != nil {
+			return common.User{}, err
 		}
-	} else {
+		hash, err := common.HashPassword(password)
+		if err != nil {
+			return common.User{}, err
+		}
+		u.PasswordHash = hash
+		u.MustChange = false
+	}
+} else {
 		if password == "" {
 			return common.User{}, fmt.Errorf("新建用户必须设置密码")
 		}
-		if len(password) < 8 {
-			return common.User{}, fmt.Errorf("密码至少需要 8 位")
+		if err := validatePasswordStrength(password); err != nil {
+			return common.User{}, err
 		}
 		hash, err := common.HashPassword(password)
 		if err != nil {
@@ -731,16 +776,16 @@ func (s *Store) ListNodeTokens() []common.NodeToken {
 func (s *Store) ListRules() []common.ForwardRule {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.listRulesLocked("")
+	return s.listRulesLocked("", nil)
 }
 
 func (s *Store) ListRulesForUser(u common.User) []common.ForwardRule {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if isAdminRole(u.Role) {
-		return s.listRulesLocked("")
+		return s.listRulesLocked("", nil)
 	}
-	return s.listRulesLocked(`WHERE user_id='` + strings.ReplaceAll(u.ID, `'`, `''`) + `'`)
+	return s.listRulesLocked("WHERE user_id=?", []any{u.ID})
 }
 
 func (s *Store) GetRule(id string) (common.ForwardRule, bool) {
@@ -806,6 +851,49 @@ func (s *Store) DeleteRule(id string) error {
 	return s.db.exec(`DELETE FROM rule_statuses WHERE rule_id=?`, id)
 }
 
+// P3-27: CloneRule creates a copy of an existing rule with a new ID.
+func (s *Store) CloneRule(ruleID string, actor common.User) (common.ForwardRule, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	orig, ok := s.getRuleLocked(ruleID)
+	if !ok {
+		return common.ForwardRule{}, fmt.Errorf("规则不存在")
+	}
+	if !isAdminRole(actor.Role) && orig.UserID != actor.ID {
+		return common.ForwardRule{}, fmt.Errorf("无权克隆该规则")
+	}
+	clone := orig
+	clone.ID = common.RandomID("fr")
+	clone.Name = orig.Name + " (副本)"
+	clone.TrafficUsed = 0
+	clone.CreatedAt = time.Now()
+	clone.UpdatedAt = time.Now()
+	if err := s.upsertRuleLocked(clone); err != nil {
+		return common.ForwardRule{}, err
+	}
+	return clone, nil
+}
+
+func (s *Store) ResetUserTraffic(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now()
+	if err := s.db.exec(`UPDATE users SET traffic_used=0, updated_at=? WHERE id=?`, timeToDB(now), id); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *Store) ResetRuleTraffic(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now()
+	if err := s.db.exec(`UPDATE forward_rules SET traffic_used=0, updated_at=? WHERE id=?`, timeToDB(now), id); err != nil {
+		return err
+	}
+	return nil
+}
+
 func (s *Store) ValidateRule(r common.ForwardRule, actor common.User) error {
 	if r.Name == "" {
 		return fmt.Errorf("规则名称不能为空")
@@ -821,6 +909,10 @@ func (s *Store) ValidateRule(r common.ForwardRule, actor common.User) error {
 	}
 	if r.TargetHost == "" {
 		return fmt.Errorf("目标地址不能为空")
+	}
+	// SSRF protection: non-admin users cannot target private/reserved IPs
+	if !isAdminRole(actor.Role) && isPrivateIP(r.TargetHost) {
+		return fmt.Errorf("非管理员不能使用内网/保留地址作为目标")
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -996,7 +1088,99 @@ func (s *Store) AddAudit(userID, action, target, ip, detail string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	_ = s.insertAuditLocked(AuditLog{ID: common.RandomID("log"), UserID: userID, Action: action, Target: target, IP: ip, Detail: detail, CreatedAt: time.Now()})
-	_ = s.db.exec(`DELETE FROM audit_logs WHERE id NOT IN (SELECT id FROM audit_logs ORDER BY created_at DESC LIMIT 5000)`)
+	_ = s.db.exec(`DELETE FROM audit_logs WHERE id NOT IN (SELECT id FROM audit_logs ORDER BY created_at DESC LIMIT 50000)`)
+}
+
+// P3-26: FireWebhook sends an async HTTP POST to the configured webhook URL.
+// The event payload includes action, target, and a timestamp.
+// It runs in a goroutine and will not block the caller.
+func (s *Store) FireWebhook(action, target, detail string) {
+	s.mu.Lock()
+	url := ""
+	secret := ""
+	rows, err := s.db.query(`SELECT key, value FROM settings WHERE key IN ('webhook_url', 'webhook_secret')`)
+	s.mu.Unlock()
+	if err != nil {
+		return
+	}
+	for _, row := range rows {
+		switch row["key"] {
+		case "webhook_url":
+			url = row["value"]
+		case "webhook_secret":
+			secret = row["value"]
+		}
+	}
+	if url == "" {
+		return
+	}
+	payload := map[string]any{
+		"action":    action,
+		"target":    target,
+		"detail":    detail,
+		"timestamp": time.Now().UTC().Format(time.RFC3339),
+	}
+	go func() {
+		b, err := json.Marshal(payload)
+		if err != nil {
+			return
+		}
+		for attempt := 0; attempt < 3; attempt++ {
+			if attempt > 0 {
+				time.Sleep(time.Duration(attempt) * 2 * time.Second)
+			}
+			req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(b))
+			if err != nil {
+				return
+			}
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("User-Agent", "RelayGuard-Webhook/1.0")
+			if secret != "" {
+				sig := common.HMACSHA256Hex(secret, b)
+				req.Header.Set("X-RelayGuard-Signature", sig)
+			}
+			client := &http.Client{Timeout: 10 * time.Second}
+			resp, err := client.Do(req)
+			if err != nil {
+				continue
+			}
+			_, _ = io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if resp.StatusCode < 500 {
+				return
+			}
+		}
+	}()
+}
+
+func (s *Store) GetSetting(key string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rows, err := s.db.query(`SELECT value FROM settings WHERE key=?`, key)
+	if err != nil || len(rows) == 0 {
+		return ""
+	}
+	return rows[0]["value"]
+}
+
+func (s *Store) SetSetting(key, value string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.db.exec(`INSERT OR REPLACE INTO settings(key,value) VALUES(?,?)`, key, value)
+}
+
+func (s *Store) ListSettings() map[string]string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rows, err := s.db.query(`SELECT key, value FROM settings`)
+	if err != nil {
+		return nil
+	}
+	m := make(map[string]string, len(rows))
+	for _, row := range rows {
+		m[row["key"]] = row["value"]
+	}
+	return m
 }
 
 func (s *Store) ListAuditLogs(limit int) []AuditLog {
@@ -1016,13 +1200,46 @@ func (s *Store) ListAuditLogs(limit int) []AuditLog {
 	return logs
 }
 
+// P3-28: ListRulesByTags returns rules that have any of the specified tags.
+func (s *Store) ListRulesByTags(u common.User, tags []string) []common.ForwardRule {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	all := s.listRulesLocked("", nil)
+	if !isAdminRole(u.Role) {
+		filtered := make([]common.ForwardRule, 0)
+		for _, r := range all {
+			if r.UserID == u.ID {
+				filtered = append(filtered, r)
+			}
+		}
+		all = filtered
+	}
+	if len(tags) == 0 {
+		return all
+	}
+	tagSet := make(map[string]bool, len(tags))
+	for _, t := range tags {
+		tagSet[t] = true
+	}
+	result := make([]common.ForwardRule, 0)
+	for _, r := range all {
+		for _, tag := range r.Tags {
+			if tagSet[tag] {
+				result = append(result, r)
+				break
+			}
+		}
+	}
+	return result
+}
+
 func (s *Store) Dashboard() map[string]any {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := time.Now()
 	totalTraffic := uint64(0)
 	enabledRules := 0
-	for _, r := range s.listRulesLocked("") {
+	for _, r := range s.listRulesLocked("", nil) {
 		totalTraffic += r.TrafficUsed
 		if r.Enabled {
 			enabledRules++
@@ -1034,7 +1251,7 @@ func (s *Store) Dashboard() map[string]any {
 			onlineNodes++
 		}
 	}
-	return map[string]any{"nodes": s.countLocked("nodes"), "online_nodes": onlineNodes, "rules": s.countLocked("forward_rules"), "enabled_rules": enabledRules, "users": s.countLocked("users"), "traffic_used": totalTraffic, "storage_engine": "sqlite"}
+	return map[string]any{"nodes": s.nodeCount(), "online_nodes": onlineNodes, "rules": s.ruleCount(), "enabled_rules": enabledRules, "users": s.userCount(), "traffic_used": totalTraffic, "storage_engine": "sqlite", "version": common.Version}
 }
 
 func (s *Store) Backup(destDir string) (string, error) {
@@ -1087,9 +1304,41 @@ func (s *Store) ListBackups(destDir string) []map[string]any {
 	return items
 }
 
+// validatePasswordStrength checks that a password meets minimum strength requirements.
+// At least 8 characters and must contain characters from at least 3 of the 4 categories:
+// uppercase, lowercase, digits, special characters.
+func validatePasswordStrength(password string) error {
+	if len(password) < 8 {
+		return fmt.Errorf("密码至少需要 8 位")
+	}
+	var hasUpper, hasLower, hasDigit, hasSpecial bool
+	for _, ch := range password {
+		switch {
+		case ch >= 'A' && ch <= 'Z':
+			hasUpper = true
+		case ch >= 'a' && ch <= 'z':
+			hasLower = true
+		case ch >= '0' && ch <= '9':
+			hasDigit = true
+		default:
+			hasSpecial = true
+		}
+	}
+	categories := 0
+	for _, ok := range []bool{hasUpper, hasLower, hasDigit, hasSpecial} {
+		if ok {
+			categories++
+		}
+	}
+	if categories < 3 {
+		return fmt.Errorf("密码必须包含大写字母、小写字母、数字、特殊字符中的至少 3 种")
+	}
+	return nil
+}
+
 func (s *Store) UpdateOwnPassword(userID, oldPassword, newPassword string) error {
-	if len(newPassword) < 8 {
-		return fmt.Errorf("新密码至少需要 8 位")
+	if err := validatePasswordStrength(newPassword); err != nil {
+		return err
 	}
 	now := time.Now()
 	s.mu.Lock()
@@ -1161,23 +1410,101 @@ func (s *Store) DeleteOtherSessions(userID, keepToken string) error {
 	return s.db.exec(`DELETE FROM sessions WHERE user_id=? AND token<>?`, userID, keepToken)
 }
 
+func (s *Store) DeleteSessionsByUser(userID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.db.exec(`DELETE FROM sessions WHERE user_id=?`, userID)
+}
+
+// RotateSessionToken replaces the session token for a given session ID,
+// invalidating the old token and returning the new session (with new token).
+func (s *Store) RotateSessionToken(oldToken string) (common.Session, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rows, err := s.db.query(`SELECT * FROM sessions WHERE token=?`, oldToken)
+	if err != nil || len(rows) == 0 {
+		return common.Session{}, fmt.Errorf("会话不存在")
+	}
+	sess := rowToSession(rows[0])
+	newToken, err := common.RandomToken(32)
+	if err != nil {
+		return common.Session{}, err
+	}
+	sess.Token = newToken
+	if err := s.db.exec(`DELETE FROM sessions WHERE token=?`, oldToken); err != nil {
+		return common.Session{}, err
+	}
+	return sess, s.upsertSessionLocked(sess)
+}
+
 func (s *Store) cleanupExpiredSessions() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.db.exec(`DELETE FROM sessions WHERE expires_at < ?`, timeToDB(time.Now()))
 }
 
-func (s *Store) userCount() int { s.mu.Lock(); defer s.mu.Unlock(); return s.countLocked("users") }
+// CleanupExpired removes expired sessions, expired node tokens, and old audit logs.
+// Called periodically.
+func (s *Store) CleanupExpired() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var err error
+	if e := s.db.exec(`DELETE FROM sessions WHERE expires_at < ?`, timeToDB(time.Now())); e != nil && err == nil {
+		err = e
+	}
+	if e := s.db.exec(`DELETE FROM node_tokens WHERE expires_at < ?`, timeToDB(time.Now())); e != nil && err == nil {
+		err = e
+	}
+	// P3-31: Configurable audit log retention
+	days := 90 // default
+	if rows, e := s.db.query(`SELECT value FROM settings WHERE key=?`, "audit_retention_days"); e == nil && len(rows) > 0 {
+		if d, perr := strconv.Atoi(rows[0]["value"]); perr == nil && d > 0 {
+			days = d
+		}
+	}
+	cutoff := time.Now().AddDate(0, 0, -days).Format(time.RFC3339)
+	if e := s.db.exec(`DELETE FROM audit_logs WHERE created_at < ?`, cutoff); e != nil && err == nil {
+		err = e
+	}
+	if e := s.db.exec(`DELETE FROM connectivity_tests WHERE created_at < ?`, cutoff); e != nil && err == nil {
+		err = e
+	}
+	return err
+}
 
-func (s *Store) countLocked(table string) int {
-	if table != "users" && table != "nodes" && table != "forward_rules" {
-		return 0
+// StartCleanupLoop runs periodic cleanup of expired sessions and tokens.
+func (s *Store) StartCleanupLoop(stopCh <-chan struct{}) {
+	ticker := time.NewTicker(1 * time.Hour)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			_ = s.CleanupExpired()
+		case <-stopCh:
+			return
+		}
 	}
-	rows, err := s.db.query(`SELECT COUNT(*) AS c FROM ` + table)
-	if err != nil || len(rows) == 0 {
-		return 0
-	}
-	return atoi(rows[0]["c"])
+}
+
+func (s *Store) userCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n, _ := s.db.querySingleInt(`SELECT COUNT(*) FROM users`)
+	return n
+}
+
+func (s *Store) nodeCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n, _ := s.db.querySingleInt(`SELECT COUNT(*) FROM nodes`)
+	return n
+}
+
+func (s *Store) ruleCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n, _ := s.db.querySingleInt(`SELECT COUNT(*) FROM forward_rules`)
+	return n
 }
 
 func (s *Store) listNodesRawLocked() []common.Node {
@@ -1192,12 +1519,12 @@ func (s *Store) listNodesRawLocked() []common.Node {
 	return out
 }
 
-func (s *Store) listRulesLocked(where string) []common.ForwardRule {
+func (s *Store) listRulesLocked(where string, args []any) []common.ForwardRule {
 	q := `SELECT * FROM forward_rules`
 	if where != "" {
 		q += " " + where
 	}
-	rows, err := s.db.query(q)
+	rows, err := s.db.query(q, args...)
 	if err != nil {
 		return nil
 	}
@@ -1261,13 +1588,19 @@ func (s *Store) upsertSessionLocked(x common.Session) error {
 	return s.db.exec(`INSERT OR REPLACE INTO sessions(token,user_id,ip,user_agent,expires_at,created_at) VALUES(?,?,?,?,?,?)`, x.Token, x.UserID, x.IP, x.UserAgent, timeToDB(x.ExpiresAt), timeToDB(x.CreatedAt))
 }
 func (s *Store) upsertNodeLocked(n common.Node) error {
+	// TODO(P0-2): Node secret is currently stored in plaintext. If the database
+	// leaks, an attacker can forge agent heartbeats. Future migration should
+	// store secrets encrypted (AES-GCM) with a server-managed key, or use a
+	// derived-key scheme that does not require retrievable plaintext for
+	// HMAC signature verification. This is a breaking change requiring a
+	// migration path for deployed agents.
 	return s.db.exec(`INSERT OR REPLACE INTO nodes(id,name,secret,status,hostname,os,arch,agent_version,public_ip,private_ips,port_range_start,port_range_end,firewall_mode,max_rules,last_seen_at,last_metrics,last_error,firewall_state,firewall_error,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, n.ID, n.Name, n.Secret, n.Status, n.Hostname, n.OS, n.Arch, n.AgentVersion, n.PublicIP, jsonString(n.PrivateIPs), n.PortRangeStart, n.PortRangeEnd, n.FirewallMode, n.MaxRules, timePtrToDB(n.LastSeenAt), jsonString(n.LastMetrics), n.LastError, n.FirewallState, n.FirewallError, timeToDB(n.CreatedAt), timeToDB(n.UpdatedAt))
 }
 func (s *Store) upsertNodeTokenLocked(t common.NodeToken) error {
 	return s.db.exec(`INSERT OR REPLACE INTO node_tokens(id,name,token_hash,used_by_node,used_at,max_uses,used_count,expires_at,created_at) VALUES(?,?,?,?,?,?,?,?,?)`, t.ID, t.Name, t.TokenHash, t.UsedByNode, timePtrToDB(t.UsedAt), t.MaxUses, t.UsedCount, timeToDB(t.ExpiresAt), timeToDB(t.CreatedAt))
 }
 func (s *Store) upsertRuleLocked(r common.ForwardRule) error {
-	return s.db.exec(`INSERT OR REPLACE INTO forward_rules(id,name,user_id,node_id,protocol,listen_port,target_host,target_port,enabled,source_cidrs,speed_limit_mbps,max_connections,traffic_limit,traffic_used,expire_at,description,firewall_managed,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, r.ID, r.Name, r.UserID, r.NodeID, r.Protocol, r.ListenPort, r.TargetHost, r.TargetPort, r.Enabled, jsonString(r.SourceCIDRs), r.SpeedLimitMbps, r.MaxConnections, r.TrafficLimit, r.TrafficUsed, timePtrToDB(r.ExpireAt), r.Description, r.FirewallManaged, timeToDB(r.CreatedAt), timeToDB(r.UpdatedAt))
+	return s.db.exec(`INSERT OR REPLACE INTO forward_rules(id,name,user_id,node_id,protocol,listen_port,target_host,target_port,enabled,source_cidrs,speed_limit_mbps,max_connections,traffic_limit,traffic_used,expire_at,description,firewall_managed,tags,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, r.ID, r.Name, r.UserID, r.NodeID, r.Protocol, r.ListenPort, r.TargetHost, r.TargetPort, r.Enabled, jsonString(r.SourceCIDRs), r.SpeedLimitMbps, r.MaxConnections, r.TrafficLimit, r.TrafficUsed, timePtrToDB(r.ExpireAt), r.Description, r.FirewallManaged, jsonString(r.Tags), timeToDB(r.CreatedAt), timeToDB(r.UpdatedAt))
 }
 func (s *Store) upsertStatusLocked(st common.RuleRuntimeStatus) error {
 	return s.db.exec(`INSERT OR REPLACE INTO rule_statuses(rule_id,state,protocol,listen_port,active_connections,bytes_in,bytes_out,last_error,updated_at) VALUES(?,?,?,?,?,?,?,?,?)`, st.RuleID, st.State, st.Protocol, st.ListenPort, st.ActiveConnections, st.BytesIn, st.BytesOut, st.LastError, timeToDB(st.UpdatedAt))
@@ -1429,7 +1762,9 @@ func rowToNodeToken(r map[string]string) common.NodeToken {
 func rowToRule(r map[string]string) common.ForwardRule {
 	var cidrs []string
 	_ = json.Unmarshal([]byte(r["source_cidrs"]), &cidrs)
-	return common.ForwardRule{ID: r["id"], Name: r["name"], UserID: r["user_id"], NodeID: r["node_id"], Protocol: r["protocol"], ListenPort: atoi(r["listen_port"]), TargetHost: r["target_host"], TargetPort: atoi(r["target_port"]), Enabled: atob(r["enabled"]), SourceCIDRs: cidrs, SpeedLimitMbps: atoi(r["speed_limit_mbps"]), MaxConnections: atoi(r["max_connections"]), TrafficLimit: atou64(r["traffic_limit"]), TrafficUsed: atou64(r["traffic_used"]), ExpireAt: parseTimePtr(r["expire_at"]), Description: r["description"], FirewallManaged: atobDefault(r["firewall_managed"], true), CreatedAt: parseTime(r["created_at"]), UpdatedAt: parseTime(r["updated_at"])}
+	var tags []string
+	_ = json.Unmarshal([]byte(r["tags"]), &tags)
+	return common.ForwardRule{ID: r["id"], Name: r["name"], UserID: r["user_id"], NodeID: r["node_id"], Protocol: r["protocol"], ListenPort: atoi(r["listen_port"]), TargetHost: r["target_host"], TargetPort: atoi(r["target_port"]), Enabled: atob(r["enabled"]), SourceCIDRs: cidrs, SpeedLimitMbps: atoi(r["speed_limit_mbps"]), MaxConnections: atoi(r["max_connections"]), TrafficLimit: atou64(r["traffic_limit"]), TrafficUsed: atou64(r["traffic_used"]), ExpireAt: parseTimePtr(r["expire_at"]), Description: r["description"], FirewallManaged: atobDefault(r["firewall_managed"], true), Tags: tags, CreatedAt: parseTime(r["created_at"]), UpdatedAt: parseTime(r["updated_at"])}
 }
 func rowToStatus(r map[string]string) common.RuleRuntimeStatus {
 	return common.RuleRuntimeStatus{RuleID: r["rule_id"], State: r["state"], Protocol: r["protocol"], ListenPort: atoi(r["listen_port"]), ActiveConnections: atoi(r["active_connections"]), BytesIn: atou64(r["bytes_in"]), BytesOut: atou64(r["bytes_out"]), LastError: r["last_error"], UpdatedAt: parseTime(r["updated_at"])}
@@ -1478,6 +1813,50 @@ func atobDefault(s string, def bool) bool {
 	return atob(s)
 }
 func isAdminRole(role string) bool { return role == "super_admin" || role == "admin" }
+
+// isPrivateIP checks if the host portion of an address is a loopback,
+// link-local, or RFC1918 private address. Returns true for addresses that
+// should be restricted from non-admin users to prevent SSRF.
+// It also checks IPv6-mapped IPv4, IPv6 loopback, and unique local addresses.
+func isPrivateIP(host string) bool {
+	// Strip port if present (handles host:port format)
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	// Try parsing as an IP first (both v4 and v6)
+	if ip, err := netip.ParseAddr(host); err == nil {
+		return isPrivateAddr(ip)
+	}
+	// Resolve hostname
+	addrs, err := net.LookupHost(host)
+	if err != nil {
+		// If resolution fails, treat as potentially unsafe
+		return true
+	}
+	for _, addr := range addrs {
+		ip, err := netip.ParseAddr(addr)
+		if err != nil {
+			continue
+		}
+		if isPrivateAddr(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+// isPrivateAddr checks a single parsed IP address for private/reserved ranges,
+// covering IPv4, IPv6, and IPv4-mapped IPv6 addresses.
+func isPrivateAddr(ip netip.Addr) bool {
+	// Unwrap IPv4-mapped IPv6 addresses (e.g., ::ffff:127.0.0.1)
+	ip = ip.Unmap()
+	return ip.IsLoopback() ||
+		ip.IsLinkLocalUnicast() ||
+		ip.IsPrivate() ||
+		ip.Is4In6() ||
+		// IPv6 specific checks
+		ip == netip.IPv6Unspecified() // ::
+}
 
 func containsString(items []string, v string) bool {
 	for _, item := range items {
@@ -1606,6 +1985,10 @@ func (s *Store) RestoreBackup(name string, destDir string, userID string, ip str
 	base, err := safeBackupName(name)
 	if err != nil {
 		return nil, err
+	}
+	// Prevent restoring the currently active database file
+	if base == filepath.Base(s.path) {
+		return nil, fmt.Errorf("不能恢复当前正在使用的数据库文件")
 	}
 	backupDir := s.backupDir(destDir)
 	backupPath := filepath.Join(backupDir, base)

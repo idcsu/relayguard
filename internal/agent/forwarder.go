@@ -11,6 +11,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -168,7 +169,24 @@ func (m *Manager) Stop() {
 }
 
 func sameRule(a, b common.ForwardRule) bool {
-	return a.Protocol == b.Protocol && a.ListenPort == b.ListenPort && a.TargetHost == b.TargetHost && a.TargetPort == b.TargetPort && a.SpeedLimitMbps == b.SpeedLimitMbps && a.MaxConnections == b.MaxConnections && strings.Join(a.SourceCIDRs, ",") == strings.Join(b.SourceCIDRs, ",")
+	if a.Protocol != b.Protocol || a.ListenPort != b.ListenPort || a.TargetHost != b.TargetHost || a.TargetPort != b.TargetPort || a.SpeedLimitMbps != b.SpeedLimitMbps || a.MaxConnections != b.MaxConnections {
+		return false
+	}
+	if len(a.SourceCIDRs) != len(b.SourceCIDRs) {
+		return false
+	}
+	aSorted := make([]string, len(a.SourceCIDRs))
+	copy(aSorted, a.SourceCIDRs)
+	bSorted := make([]string, len(b.SourceCIDRs))
+	copy(bSorted, b.SourceCIDRs)
+	sort.Strings(aSorted)
+	sort.Strings(bSorted)
+	for i := range aSorted {
+		if aSorted[i] != bSorted[i] {
+			return false
+		}
+	}
+	return true
 }
 
 type tcpForwarder struct {
@@ -181,10 +199,68 @@ type tcpForwarder struct {
 	bytesIn  uint64
 	bytesOut uint64
 	prefix   []netip.Prefix
+	limiter  *rateLimiter // per-rule 限速器
+}
+
+type rateLimiter struct {
+	bw         int64 // bytes per second, 0 = unlimited
+	mu         sync.Mutex
+	available  int64
+	lastRefill time.Time
+}
+
+func newRateLimiter(mbps int) *rateLimiter {
+	var bw int64
+	if mbps > 0 {
+		bw = int64(mbps) * 1024 * 1024 / 8
+	}
+	return &rateLimiter{bw: bw, available: bw, lastRefill: time.Now()}
+}
+
+func (rl *rateLimiter) wait(n int) {
+	if rl.bw == 0 {
+		return
+	}
+	rl.mu.Lock()
+	now := time.Now()
+	elapsed := now.Sub(rl.lastRefill)
+	if elapsed > 0 {
+		rl.available += int64(elapsed.Seconds() * float64(rl.bw))
+		if rl.available > rl.bw {
+			rl.available = rl.bw
+		}
+		rl.lastRefill = now
+	}
+	rl.mu.Unlock()
+
+	for n > 0 {
+		chunk := n
+		if chunk > 32*1024 {
+			chunk = 32 * 1024
+		}
+		rl.mu.Lock()
+		for rl.available < int64(chunk) {
+			rl.mu.Unlock()
+			time.Sleep(time.Duration(float64(int64(chunk)-rl.available) / float64(rl.bw) * float64(time.Second)))
+			rl.mu.Lock()
+			now := time.Now()
+			elapsed := now.Sub(rl.lastRefill)
+			if elapsed > 0 {
+				rl.available += int64(elapsed.Seconds() * float64(rl.bw))
+				if rl.available > rl.bw {
+					rl.available = rl.bw
+				}
+				rl.lastRefill = now
+			}
+		}
+		rl.available -= int64(chunk)
+		rl.mu.Unlock()
+		n -= chunk
+	}
 }
 
 func newTCPForwarder(rule common.ForwardRule) *tcpForwarder {
-	f := &tcpForwarder{rule: rule, stop: make(chan struct{}), prefix: parsePrefixes(rule.SourceCIDRs)}
+	f := &tcpForwarder{rule: rule, stop: make(chan struct{}), prefix: parsePrefixes(rule.SourceCIDRs), limiter: newRateLimiter(rule.SpeedLimitMbps)}
 	f.state.Store("starting")
 	return f
 }
@@ -241,10 +317,35 @@ func (f *tcpForwarder) handle(client net.Conn) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan struct{}, 2)
-	go func() { copyWithLimit(ctx, remote, client, f.rule.SpeedLimitMbps, &f.bytesIn); done <- struct{}{} }()
-	go func() { copyWithLimit(ctx, client, remote, f.rule.SpeedLimitMbps, &f.bytesOut); done <- struct{}{} }()
+	go func() { f.limitedCopy(ctx, remote, client, &f.bytesIn); done <- struct{}{} }()
+	go func() { f.limitedCopy(ctx, client, remote, &f.bytesOut); done <- struct{}{} }()
 	<-done
 	cancel()
+}
+
+func (f *tcpForwarder) limitedCopy(ctx context.Context, dst io.Writer, src io.Reader, counter *uint64) {
+	buf := make([]byte, 32*1024)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+		nr, er := src.Read(buf)
+		if nr > 0 {
+			f.limiter.wait(nr)
+			nw, ew := dst.Write(buf[0:nr])
+			if nw > 0 {
+				atomic.AddUint64(counter, uint64(nw))
+			}
+			if ew != nil || nr != nw {
+				return
+			}
+		}
+		if er != nil {
+			return
+		}
+	}
 }
 
 func (f *tcpForwarder) allowed(addr net.Addr) bool {
@@ -298,6 +399,7 @@ type udpForwarder struct {
 	prefix   []netip.Prefix
 	mu       sync.Mutex
 	sessions map[string]*udpSession
+	limiter  *rateLimiter // per-rule 限速器
 }
 
 type udpSession struct {
@@ -307,7 +409,7 @@ type udpSession struct {
 }
 
 func newUDPForwarder(rule common.ForwardRule) *udpForwarder {
-	f := &udpForwarder{rule: rule, stop: make(chan struct{}), prefix: parsePrefixes(rule.SourceCIDRs), sessions: map[string]*udpSession{}}
+	f := &udpForwarder{rule: rule, stop: make(chan struct{}), prefix: parsePrefixes(rule.SourceCIDRs), sessions: map[string]*udpSession{}, limiter: newRateLimiter(rule.SpeedLimitMbps)}
 	f.state.Store("starting")
 	return f
 }
@@ -342,6 +444,7 @@ func (f *udpForwarder) Run() {
 		if !f.allowedUDP(client) {
 			continue
 		}
+		f.limiter.wait(n)
 		atomic.AddUint64(&f.bytesIn, uint64(n))
 		sess, err := f.session(client)
 		if err != nil {
@@ -364,26 +467,37 @@ func (f *udpForwarder) session(client *net.UDPAddr) (*udpSession, error) {
 		f.mu.Unlock()
 		return nil, errors.New("UDP 会话数超过限制")
 	}
+	// 预占位防止并发绕过 MaxConnections 限制
+	sess := &udpSession{client: client, lastSeen: time.Now()}
+	f.sessions[key] = sess
+	atomic.StoreInt64(&f.active, int64(len(f.sessions)))
 	f.mu.Unlock()
 
 	remoteAddr, err := net.ResolveUDPAddr("udp", net.JoinHostPort(f.rule.TargetHost, strconv.Itoa(f.rule.TargetPort)))
 	if err != nil {
+		f.mu.Lock()
+		delete(f.sessions, key)
+		atomic.StoreInt64(&f.active, int64(len(f.sessions)))
+		f.mu.Unlock()
 		return nil, err
 	}
 	remote, err := net.DialUDP("udp", nil, remoteAddr)
 	if err != nil {
+		f.mu.Lock()
+		delete(f.sessions, key)
+		atomic.StoreInt64(&f.active, int64(len(f.sessions)))
+		f.mu.Unlock()
 		return nil, err
 	}
-	sess := &udpSession{client: client, remote: remote, lastSeen: time.Now()}
-	f.mu.Lock()
-	f.sessions[key] = sess
-	atomic.StoreInt64(&f.active, int64(len(f.sessions)))
-	f.mu.Unlock()
+	sess.remote = remote
 	go f.readRemote(key, sess)
 	return sess, nil
 }
 
 func (f *udpForwarder) readRemote(key string, sess *udpSession) {
+	if sess.remote == nil {
+		return
+	}
 	defer sess.remote.Close()
 	buf := make([]byte, 64*1024)
 	for {
@@ -392,6 +506,9 @@ func (f *udpForwarder) readRemote(key string, sess *udpSession) {
 		if err != nil {
 			f.removeSession(key)
 			return
+		}
+		if n > 0 {
+			f.limiter.wait(n)
 		}
 		atomic.AddUint64(&f.bytesOut, uint64(n))
 		_, _ = f.conn.WriteToUDP(buf[:n], sess.client)
@@ -489,43 +606,6 @@ func parsePrefixes(cidrs []string) []netip.Prefix {
 		}
 	}
 	return out
-}
-
-func copyWithLimit(ctx context.Context, dst io.Writer, src io.Reader, mbps int, counter *uint64) {
-	buf := make([]byte, 32*1024)
-	var start time.Time
-	var transferred int64
-	limitBytesPerSec := int64(mbps) * 1024 * 1024 / 8
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		default:
-		}
-		nr, er := src.Read(buf)
-		if nr > 0 {
-			if limitBytesPerSec > 0 {
-				if start.IsZero() {
-					start = time.Now()
-				}
-				transferred += int64(nr)
-				expected := time.Duration(float64(transferred) / float64(limitBytesPerSec) * float64(time.Second))
-				if sleep := start.Add(expected).Sub(time.Now()); sleep > 0 {
-					time.Sleep(sleep)
-				}
-			}
-			nw, ew := dst.Write(buf[0:nr])
-			if nw > 0 {
-				atomic.AddUint64(counter, uint64(nw))
-			}
-			if ew != nil || nr != nw {
-				return
-			}
-		}
-		if er != nil {
-			return
-		}
-	}
 }
 
 func (m *Manager) Debug() string {

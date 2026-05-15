@@ -1,0 +1,17 @@
+.git
+.github
+*.md
+LICENSE
+relayguard/
+frontend/node_modules/
+frontend/dist/
+web/dist/
+internal/panel/webdist/
+relayguard-panel
+relayguard-agent
+*.db
+*.db-wal
+*.db-shm
+data/
+deploy/
+scripts/

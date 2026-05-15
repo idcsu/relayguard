@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"github.com/idcsu/relayguard/internal/agent"
 	"github.com/idcsu/relayguard/internal/common"
@@ -63,9 +65,18 @@ func main() {
 	cfg.DataDir = *dataDir
 
 	a := agent.New(cfg)
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-sigCh
+		a.Stop()
+	}()
+
 	if err := a.Run(); err != nil {
 		log.Fatalf("Agent 启动失败：%v", err)
 	}
+	log.Printf("Agent 已关闭")
 }
 
 func env(k, def string) string {

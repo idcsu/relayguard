@@ -93,12 +93,43 @@ install_deps(){
   fi
 }
 
+verify_sha256(){
+  local file="$1"
+  local arch
+  arch=$(arch_name)
+  local sum_url="https://github.com/${REPO}/releases/latest/download/SHA256SUMS"
+  local sum_file="/tmp/relayguard-agent-SHA256SUMS"
+  yellow "正在下载校验文件..."
+  if curl -fL "$sum_url" -o "$sum_file" 2>/dev/null; then
+    local expected
+    expected=$(grep "relayguard-agent-linux-${arch}" "$sum_file" | awk '{print $1}')
+    if [ -n "$expected" ]; then
+      local actual
+      actual=$(sha256sum "$file" | awk '{print $1}')
+      if [ "$actual" != "$expected" ]; then
+        red "SHA256 校验失败！文件可能被篡改。"
+        red "期望：$expected"
+        red "实际：$actual"
+        rm -f "$file" "$sum_file"
+        exit 1
+      fi
+      green "SHA256 校验通过"
+    else
+      yellow "校验文件中未找到对应架构的校验值，跳过验证"
+    fi
+  else
+    yellow "无法下载校验文件，跳过 SHA256 验证"
+  fi
+  rm -f "$sum_file"
+}
+
 download_agent(){
   local arch
   arch=$(arch_name)
   local url="https://github.com/${REPO}/releases/latest/download/relayguard-agent-linux-${arch}"
   yellow "正在下载：$url"
   curl -fL "$url" -o "${BIN_DIR}/${APP}"
+  verify_sha256 "${BIN_DIR}/${APP}"
   chmod +x "${BIN_DIR}/${APP}"
 }
 

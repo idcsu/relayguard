@@ -282,22 +282,31 @@ install_agent(){
   yellow "严格防火墙模式将保留 SSH 端口：${SSH_PORTS}"
   mkdir -p "$DATA_DIR"
   download_agent
-  cat >/etc/systemd/system/${SERVICE} <<EOF2
+  # Store sensitive token in an EnvironmentFile instead of ExecStart
+  # to avoid leaking it via systemctl status or /proc
+  cat >"${DATA_DIR}/env" <<EOF2
+RG_TOKEN=${TOKEN}
+RG_PANEL=${PANEL}
+EOF2
+  chmod 600 "${DATA_DIR}/env"
+  cat >/etc/systemd/system/${SERVICE} <<'SVCEOF'
 [Unit]
-Description=RelayGuard Agent 转发节点
+Description=RelayGuard Agent 节点
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=${BIN_DIR}/${APP} -panel ${PANEL} -token ${TOKEN} -data ${DATA_DIR} -ssh-ports ${SSH_PORTS} ${ALLOW_TCP:+-allow-tcp ${ALLOW_TCP}} ${ALLOW_UDP:+-allow-udp ${ALLOW_UDP}}
+EnvironmentFile=__DATADIR__/env
+ExecStart=__BINDIR__/__APP__ -panel ${RG_PANEL} -token ${RG_TOKEN} -data __DATADIR__ -ssh-ports __SSH_PORTS__ __ALLOW_TCP__ __ALLOW_UDP__
 Restart=always
 RestartSec=3
 LimitNOFILE=1048576
 
 [Install]
 WantedBy=multi-user.target
-EOF2
+SVCEOF
+  sed -i -e "s|__DATADIR__|${DATA_DIR}|g" -e "s|__BINDIR__|${BIN_DIR}|g" -e "s|__APP__|${APP}|g" -e "s|__SSH_PORTS__|${SSH_PORTS}|g" -e "s|__ALLOW_TCP__|${ALLOW_TCP:+-allow-tcp ${ALLOW_TCP}}|g" -e "s|__ALLOW_UDP__|${ALLOW_UDP:+-allow-udp ${ALLOW_UDP}}|g" /etc/systemd/system/${SERVICE}
   systemctl daemon-reload
   systemctl enable --now ${SERVICE}
   green "Agent 安装完成"

@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"syscall"
 
 	"github.com/idcsu/relayguard/internal/common"
 	"github.com/idcsu/relayguard/internal/panel"
@@ -49,9 +51,19 @@ func main() {
 		log.Printf("============================================================")
 	}
 
-	if err := panel.NewServer(st, *addr).ListenAndServe(); err != nil {
+	srv := panel.NewServer(st, *addr)
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-sigCh
+		srv.Stop()
+	}()
+
+	if err := srv.ListenAndServe(); err != nil {
 		log.Fatalf("面板启动失败：%v", err)
 	}
+	log.Printf("面板已关闭")
 }
 
 func env(k, def string) string {
