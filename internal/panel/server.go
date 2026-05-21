@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -25,11 +26,12 @@ type pendingTOTP struct {
 }
 
 type Server struct {
-	store       *Store
-	addr        string
-	limiter     *loginLimiter
-	writeLimiter *rateLimiter
-	stopCh      chan struct{}
+	store        *Store
+	addr         string
+	limiter      *loginLimiter
+	writeLimiter  *rateLimiter
+	agentLimiter *rateLimiter // Per-IP rate limiter for unauthenticated agent endpoints
+	stopCh       chan struct{}
 	pendingTOTPs sync.Map // map[userID]pendingTOTP — tracks TOTP secrets awaiting enable
 }
 
@@ -159,7 +161,14 @@ func (rl *rateLimiter) cleanup() {
 }
 
 func NewServer(store *Store, addr string) *Server {
-	return &Server{store: store, addr: addr, limiter: newLoginLimiter(), writeLimiter: newRateLimiter(), stopCh: make(chan struct{})}
+	return &Server{
+		store:        store,
+		addr:         addr,
+		limiter:      newLoginLimiter(),
+		writeLimiter: newRateLimiter(),
+		agentLimiter: &rateLimiter{entries: make(map[string]*rateLimiterEntry), max: 10, window: 1 * time.Minute}, // 10 req/min per IP for agent endpoints
+		stopCh:       make(chan struct{}),
+	}
 }
 
 func (s *Server) Stop() {
@@ -289,7 +298,7 @@ func (s *Server) writeRateLimit(next http.Handler) http.Handler {
 	})
 }
 
-// startLimiterCleanup periodically cleans up login limiter and write rate limiter entries.
+// startLimiterCleanup periodically cleans up login limiter, write rate limiter, and agent rate limiter entries.
 func (s *Server) startLimiterCleanup() {
 	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
@@ -298,6 +307,7 @@ func (s *Server) startLimiterCleanup() {
 		case <-ticker.C:
 			s.limiter.cleanup()
 			s.writeLimiter.cleanup()
+			s.agentLimiter.cleanup()
 		case <-s.stopCh:
 			return
 		}
@@ -1066,7 +1076,9 @@ func (s *Server) handleBackups(w http.ResponseWriter, r *http.Request, u common.
 			return
 		}
 		s.store.AddAudit(u.ID, "backup", "database", clientIP(r), "手动创建数据库备份")
-		writeJSON(w, map[string]any{"ok": true, "path": path})
+		// Only return the filename, not the full filesystem path (prevent info leakage)
+		filename := filepath.Base(path)
+		writeJSON(w, map[string]any{"ok": true, "name": filename})
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "方法不允许")
 	}
@@ -1101,6 +1113,11 @@ func (s *Server) handleBackupByName(w http.ResponseWriter, r *http.Request, u co
 func (s *Server) handleAgentRegister(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "方法不允许")
+		return
+	}
+	ip := clientIP(r)
+	if !s.agentLimiter.allow(ip) {
+		writeError(w, http.StatusTooManyRequests, "请求过于频繁，请稍后再试")
 		return
 	}
 	var req common.AgentRegisterRequest
@@ -1339,17 +1356,17 @@ func validateSettingValue(key, value string) error {
 		}
 	case "webhook_url":
 		if value != "" && !isValidWebhookURL(value) {
-			return fmt.Errorf("webhook_url 必须是 HTTPS 或 HTTP URL，且不能指向内网地址")
+			return fmt.Errorf("webhook_url 必须是 HTTPS URL，且不能指向内网地址")
 		}
 	}
 	return nil
 }
 
-// isValidWebhookURL validates that a webhook URL is well-formed and does not
-// point to a private/reserved network address (SSRF protection).
+// isValidWebhookURL validates that a webhook URL is well-formed, uses HTTPS,
+// and does not point to a private/reserved network address (SSRF protection).
 func isValidWebhookURL(raw string) bool {
 	u, err := url.Parse(raw)
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
+	if err != nil || u.Scheme != "https" {
 		return false
 	}
 	host := u.Hostname()
@@ -1376,6 +1393,8 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request, u common
 		if v, ok := settings["webhook_secret"]; ok && len(v) > 4 {
 			settings["webhook_secret"] = v[:2] + strings.Repeat("*", len(v)-4) + v[len(v)-2:]
 		}
+		// Never expose server_key via API
+		delete(settings, "server_key")
 		writeJSON(w, map[string]any{"items": settings})
 	case http.MethodPut:
 		if !requireAdmin(w, u) {

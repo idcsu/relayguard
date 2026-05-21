@@ -1,6 +1,8 @@
 package common
 
 import (
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
@@ -75,11 +77,75 @@ func VerifyHMACSHA256Hex(secret string, data []byte, signature string) bool {
 	return subtle.ConstantTimeCompare([]byte(expected), []byte(signature)) == 1
 }
 
-// NodeSecretHMAC returns an HMAC-SHA256 digest of the node secret using a
-// server-level key. This is reserved for a future migration where node secrets
-// will be stored as HMAC digests rather than plaintext.
+// NodeSecretHMAC is NOT used for node secrets since they must be recoverable
+// for HMAC heartbeat verification. Node secrets use AES-GCM encryption instead
+// (see EncryptSecret/DecryptSecret in Store).
+// NodeSecretHMAC is kept for future use (e.g., webhook secret verification).
 func NodeSecretHMAC(serverKey, secret string) string {
 	return HMACSHA256Hex(serverKey, []byte(secret))
+}
+
+// EncryptSecret encrypts a plaintext string using AES-GCM with the given key.
+// Returns a base64-encoded string prefixed with "enc:" for storage.
+// This allows storing secrets securely in the database while still being
+// recoverable for HMAC heartbeat verification.
+func EncryptSecret(key, plaintext string) (string, error) {
+	aesKey := deriveAESKey(key)
+	block, err := aes.NewCipher(aesKey)
+	if err != nil {
+		return "", err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return "", err
+	}
+	nonce := make([]byte, gcm.NonceSize())
+	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
+		return "", err
+	}
+	ciphertext := gcm.Seal(nonce, nonce, []byte(plaintext), nil)
+	return "enc:" + base64.RawURLEncoding.EncodeToString(ciphertext), nil
+}
+
+// DecryptSecret decrypts an AES-GCM encrypted string (prefixed with "enc:").
+// If the input is not prefixed with "enc:", it is returned as-is (legacy plaintext).
+func DecryptSecret(key, stored string) (string, error) {
+	if !strings.HasPrefix(stored, "enc:") {
+		return stored, nil // legacy plaintext
+	}
+	data, err := base64.RawURLEncoding.DecodeString(stored[4:])
+	if err != nil {
+		return "", fmt.Errorf("解密密钥失败：%w", err)
+	}
+	aesKey := deriveAESKey(key)
+	block, err := aes.NewCipher(aesKey)
+	if err != nil {
+		return "", err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return "", err
+	}
+	nonceSize := gcm.NonceSize()
+	if len(data) < nonceSize {
+		return "", fmt.Errorf("密钥数据长度不足")
+	}
+	plaintext, err := gcm.Open(nil, data[:nonceSize], data[nonceSize:], nil)
+	if err != nil {
+		return "", fmt.Errorf("密钥验证失败")
+	}
+	return string(plaintext), nil
+}
+
+// IsEncryptedSecret returns true if the stored value is an AES-GCM encrypted secret.
+func IsEncryptedSecret(stored string) bool {
+	return strings.HasPrefix(stored, "enc:")
+}
+
+// deriveAESKey derives a 32-byte AES-256 key from a server key string using SHA-256.
+func deriveAESKey(key string) []byte {
+	h := sha256.Sum256([]byte(key))
+	return h[:]
 }
 
 func pbkdf2SHA256(password, salt []byte, iter, keyLen int) []byte {

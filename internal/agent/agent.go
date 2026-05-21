@@ -81,6 +81,10 @@ func (a *Agent) Run() error {
 		return fmt.Errorf("缺少面板地址")
 	}
 	a.cfg.PanelURL = strings.TrimRight(a.cfg.PanelURL, "/")
+	// Warn if connecting to panel over plain HTTP (credentials and secrets transmitted in cleartext)
+	if !strings.HasPrefix(a.cfg.PanelURL, "https://") {
+		log.Printf("警告：面板地址使用 HTTP 而非 HTTPS，节点密钥和数据将以明文传输，建议配置 TLS")
+	}
 	if len(a.cfg.SSHPorts) == 0 {
 		a.cfg.SSHPorts = []int{22}
 	}

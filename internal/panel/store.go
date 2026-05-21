@@ -9,10 +9,12 @@ import "C"
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/netip"
@@ -29,9 +31,10 @@ import (
 )
 
 type Store struct {
-	mu   sync.Mutex // TODO: Consider sync.RWMutex for better read concurrency. However, CGO SQLite operations (s.db.query/s.db.exec) are NOT thread-safe with the same connection, so exclusive locking is required for all DB access. Migrate away from CGO SQLite before using RWMutex.
-	path string
-	db   *sqliteDB
+	mu        sync.Mutex // TODO: Consider sync.RWMutex for better read concurrency. However, CGO SQLite operations (s.db.query/s.db.exec) are NOT thread-safe with the same connection, so exclusive locking is required for all DB access. Migrate away from CGO SQLite before using RWMutex.
+	path      string
+	db        *sqliteDB
+	serverKey string // HMAC key for node secrets; auto-generated on first run
 }
 
 // Data 只用于从 v0.1/v0.2 的 JSON 原型存储迁移到 SQLite。
@@ -335,11 +338,26 @@ func (s *Store) setDefaultSettingsLocked() error {
 		"audit_retention_days": "90",
 		"webhook_url":         "",
 		"webhook_secret":      "",
+		"server_key":          "",
 	}
 	for k, v := range defaults {
 		if err := s.db.exec(`INSERT OR IGNORE INTO settings(key,value) VALUES(?,?)`, k, v); err != nil {
 			return err
 		}
+	}
+	// Auto-generate server_key if not set
+	rows, qErr := s.db.query(`SELECT value FROM settings WHERE key='server_key'`)
+	if qErr != nil || len(rows) == 0 || rows[0]["value"] == "" {
+		generated, gErr := common.RandomToken(32)
+		if gErr != nil {
+			return fmt.Errorf("生成 server_key 失败：%w", gErr)
+		}
+		if err := s.db.exec(`UPDATE settings SET value=? WHERE key='server_key'`, generated); err != nil {
+			return err
+		}
+		s.serverKey = generated
+	} else {
+		s.serverKey = rows[0]["value"]
 	}
 	return nil
 }
@@ -1055,11 +1073,22 @@ func (s *Store) UpdateNodeHeartbeat(nodeID string, req common.AgentHeartbeatRequ
 	return nil
 }
 
+// NodeSecret returns the decrypted plaintext secret for a given node.
+// If the stored secret is encrypted (enc: prefix), it decrypts using serverKey.
+// If the stored secret is legacy plaintext, it returns as-is.
 func (s *Store) NodeSecret(nodeID string) (string, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	n, ok := s.getNodeLocked(nodeID)
-	return n.Secret, ok && n.Secret != ""
+	if !ok || n.Secret == "" {
+		return "", false
+	}
+	plain, err := common.DecryptSecret(s.serverKey, n.Secret)
+	if err != nil {
+		log.Printf("解密节点密钥失败 (node=%s): %v", nodeID, err)
+		return "", false
+	}
+	return plain, true
 }
 
 func (s *Store) ListStatuses() []common.RuleRuntimeStatus {
@@ -1101,6 +1130,8 @@ func (s *Store) AddAudit(userID, action, target, ip, detail string) {
 // P3-26: FireWebhook sends an async HTTP POST to the configured webhook URL.
 // The event payload includes action, target, and a timestamp.
 // It runs in a goroutine and will not block the caller.
+// The HTTP client uses a custom DialContext that checks the resolved IP against
+// isPrivateAddr at connection time, preventing DNS rebinding SSRF attacks.
 func (s *Store) FireWebhook(action, target, detail string) {
 	s.mu.Lock()
 	url := ""
@@ -1132,6 +1163,39 @@ func (s *Store) FireWebhook(action, target, detail string) {
 		if err != nil {
 			return
 		}
+		// Custom transport with DNS rebinding protection:
+		// resolve the hostname at connection time and reject private IPs.
+		transport := &http.Transport{
+			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+				// Split host:port, resolve, and check IP
+				host, port, err := net.SplitHostPort(addr)
+				if err != nil {
+					return nil, fmt.Errorf("webhook 地址格式错误：%w", err)
+				}
+				resolver := net.Resolver{}
+				addrs, err := resolver.LookupIPAddr(ctx, host)
+				if err != nil {
+					return nil, fmt.Errorf("webhook 域名解析失败：%w", err)
+				}
+				for _, ipAddr := range addrs {
+					ip, ok := netip.AddrFromSlice(ipAddr.IP)
+					if !ok {
+						continue
+					}
+					if isPrivateAddr(ip.Unmap()) {
+						return nil, fmt.Errorf("webhook 地址解析到内网 IP：%s", ipAddr.IP)
+					}
+				}
+				// Use the first non-private resolved address
+				if len(addrs) == 0 {
+					return nil, fmt.Errorf("webhook 域名无可用地址：%s", host)
+				}
+				dialer := net.Dialer{}
+				resolvedAddr := net.JoinHostPort(addrs[0].IP.String(), port)
+				return dialer.DialContext(ctx, network, resolvedAddr)
+			},
+		}
+		client := &http.Client{Timeout: 10 * time.Second, Transport: transport}
 		for attempt := 0; attempt < 3; attempt++ {
 			if attempt > 0 {
 				time.Sleep(time.Duration(attempt) * 2 * time.Second)
@@ -1146,7 +1210,6 @@ func (s *Store) FireWebhook(action, target, detail string) {
 				sig := common.HMACSHA256Hex(secret, b)
 				req.Header.Set("X-RelayGuard-Signature", sig)
 			}
-			client := &http.Client{Timeout: 10 * time.Second}
 			resp, err := client.Do(req)
 			if err != nil {
 				continue
@@ -1598,13 +1661,17 @@ func (s *Store) upsertSessionLocked(x common.Session) error {
 	return s.db.exec(`INSERT OR REPLACE INTO sessions(token,user_id,ip,user_agent,expires_at,created_at) VALUES(?,?,?,?,?,?)`, x.Token, x.UserID, x.IP, x.UserAgent, timeToDB(x.ExpiresAt), timeToDB(x.CreatedAt))
 }
 func (s *Store) upsertNodeLocked(n common.Node) error {
-	// TODO(P0-2): Node secret is currently stored in plaintext. If the database
-	// leaks, an attacker can forge agent heartbeats. Future migration should
-	// store secrets encrypted (AES-GCM) with a server-managed key, or use a
-	// derived-key scheme that does not require retrievable plaintext for
-	// HMAC signature verification. This is a breaking change requiring a
-	// migration path for deployed agents.
-	return s.db.exec(`INSERT OR REPLACE INTO nodes(id,name,secret,status,hostname,os,arch,agent_version,public_ip,private_ips,port_range_start,port_range_end,firewall_mode,max_rules,last_seen_at,last_metrics,last_error,firewall_state,firewall_error,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, n.ID, n.Name, n.Secret, n.Status, n.Hostname, n.OS, n.Arch, n.AgentVersion, n.PublicIP, jsonString(n.PrivateIPs), n.PortRangeStart, n.PortRangeEnd, n.FirewallMode, n.MaxRules, timePtrToDB(n.LastSeenAt), jsonString(n.LastMetrics), n.LastError, n.FirewallState, n.FirewallError, timeToDB(n.CreatedAt), timeToDB(n.UpdatedAt))
+	// Encrypt node secret before storing. Legacy plaintext secrets are also
+	// encrypted on write (rotation happens transparently on next save).
+	secretToStore := n.Secret
+	if n.Secret != "" && !common.IsEncryptedSecret(n.Secret) {
+		enc, err := common.EncryptSecret(s.serverKey, n.Secret)
+		if err != nil {
+			return fmt.Errorf("加密节点密钥失败：%w", err)
+		}
+		secretToStore = enc
+	}
+	return s.db.exec(`INSERT OR REPLACE INTO nodes(id,name,secret,status,hostname,os,arch,agent_version,public_ip,private_ips,port_range_start,port_range_end,firewall_mode,max_rules,last_seen_at,last_metrics,last_error,firewall_state,firewall_error,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, n.ID, n.Name, secretToStore, n.Status, n.Hostname, n.OS, n.Arch, n.AgentVersion, n.PublicIP, jsonString(n.PrivateIPs), n.PortRangeStart, n.PortRangeEnd, n.FirewallMode, n.MaxRules, timePtrToDB(n.LastSeenAt), jsonString(n.LastMetrics), n.LastError, n.FirewallState, n.FirewallError, timeToDB(n.CreatedAt), timeToDB(n.UpdatedAt))
 }
 func (s *Store) upsertNodeTokenLocked(t common.NodeToken) error {
 	return s.db.exec(`INSERT OR REPLACE INTO node_tokens(id,name,token_hash,used_by_node,used_at,max_uses,used_count,expires_at,created_at) VALUES(?,?,?,?,?,?,?,?,?)`, t.ID, t.Name, t.TokenHash, t.UsedByNode, timePtrToDB(t.UsedAt), t.MaxUses, t.UsedCount, timeToDB(t.ExpiresAt), timeToDB(t.CreatedAt))
