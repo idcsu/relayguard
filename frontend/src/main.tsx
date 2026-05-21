@@ -45,8 +45,10 @@ function App() {
   const [modal, setModal] = useState<ModalState>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [filters, setFilters] = useState({ nodes: { q: '', status: 'all' }, rules: { q: '', node: 'all', protocol: 'all', state: 'all', tags: '' } });
+  const [mobileOpen, setMobileOpen] = useState(false);
 
   const isAdmin = !!user && ['super_admin', 'admin'].includes(user.role);
+  const navTo = useCallback((p: Page) => { setPage(p); setMobileOpen(false); }, []);
   const statusOf = useCallback((id: string) => statuses[id] || {}, [statuses]);
   const nodeName = useCallback((id?: string) => nodes.find(n => n.id === id)?.name || id || '-', [nodes]);
   const ownerName = useCallback((id?: string) => users.find(u => u.id === id)?.username || (id === user?.id ? user.username : id || '-'), [users, user]);
@@ -78,7 +80,7 @@ function App() {
         const me = await api<{ user: User; version: string }>('/api/me');
         setUser(me.user);
         setVersion(me.version || '');
-        if (me.user?.must_change) setPage('account');
+        if (me.user?.must_change) navTo('account');
       } catch {
         setUser(null);
       } finally {
@@ -118,19 +120,19 @@ function App() {
   }
 
   if (loading) return <LoadingScreen />;
-  if (!user) return <LoginPage onLogin={(u, v) => { setUser(u); setVersion(v || version); if (u.must_change) setPage('account'); }} toast={toast} />;
+  if (!user) return <LoginPage onLogin={(u, v) => { setUser(u); setVersion(v || version); if (u.must_change) navTo('account'); }} toast={toast} />;
 
   const visibleNavs = navs.filter(([id]) => isAdmin || !['users', 'tokens', 'audit', 'backup', 'settings'].includes(id));
 
   return <div className="min-h-screen">
-    <aside className="fixed inset-y-0 left-0 z-30 hidden w-72 border-r border-slate-200/70 bg-slate-950 text-white shadow-soft lg:block">
+    <aside className={cn('fixed inset-y-0 left-0 z-30 w-72 border-r border-slate-200/70 bg-slate-950 text-white shadow-soft transition-transform', mobileOpen ? 'block' : 'hidden lg:block')}>
       <div className="p-6">
         <div className="rounded-3xl bg-white/10 p-4 ring-1 ring-white/10">
           <div className="text-2xl font-black">RelayGuard</div>
           <div className="mt-1 text-sm text-slate-300">中转卫士 · {version || 'v0.12'}</div>
         </div>
         <nav className="mt-6 grid gap-1">
-          {visibleNavs.map(([id, name, icon]) => <button key={id} onClick={() => setPage(id)} className={cn('flex items-center gap-3 rounded-2xl px-4 py-3 text-left text-sm font-bold transition', page === id ? 'bg-white text-slate-950 shadow-lg' : 'text-slate-300 hover:bg-white/10 hover:text-white')}>
+          {visibleNavs.map(([id, name, icon]) => <button key={id} onClick={() => navTo(id)} className={cn('flex items-center gap-3 rounded-2xl px-4 py-3 text-left text-sm font-bold transition', page === id ? 'bg-white text-slate-950 shadow-lg' : 'text-slate-300 hover:bg-white/10 hover:text-white')}>
             <span className="grid h-8 w-8 place-items-center rounded-xl bg-white/10">{icon}</span>{name}
           </button>)}
         </nav>
@@ -141,7 +143,7 @@ function App() {
         <button className="btn mt-4 w-full" onClick={logout}>退出登录</button>
       </div>
     </aside>
-
+    {mobileOpen && <div className="fixed inset-0 z-20 bg-slate-950/50 backdrop-blur-sm lg:hidden" onClick={() => setMobileOpen(false)} />}
     <main className="lg:pl-72">
       <header className="sticky top-0 z-20 border-b border-slate-200/70 bg-white/70 px-5 py-4 backdrop-blur-xl lg:px-8">
         <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
@@ -151,7 +153,7 @@ function App() {
           </div>
           <div className="flex flex-wrap gap-2">
             <button className="btn" onClick={() => refreshAll().then(() => toast('已刷新')).catch(e => toast(e.message, 'danger'))}>{refreshing ? '刷新中...' : '刷新'}</button>
-            <button className="btn lg:hidden" onClick={() => setPage('dashboard')}>菜单</button>
+            <button className="btn lg:hidden" onClick={() => setMobileOpen(o => !o)}>{mobileOpen ? '✕ 关闭' : '☰ 菜单'}</button>
           </div>
         </div>
       </header>
@@ -286,80 +288,79 @@ function useTrafficTrend(total: number) {
 }
 
 function TrafficTrend({ points, range, setRange }: { points: TrafficPoint[]; range: string; setRange: (v: string) => void }) {
-  const W = 800; const H = 240; const PX = 40; const PY = 30;
+  const W = 800; const H = 220; const PX = 60; const PY = 28; const GW = W - PX * 2; const GH = H - PY * 2;
   const safePoints = points.length ? points : [{ time: new Date().toISOString(), total: 0, delta: 0 }];
   const values = safePoints.map(p => Number(p.total || 0));
   const vmin = Math.min(...values); const vmax = Math.max(...values);
   const vspan = Math.max(1, vmax - vmin);
 
   const coords = safePoints.map((p, i) => {
-    const x = safePoints.length <= 1 ? PX : PX + i * ((W - PX * 2) / (safePoints.length - 1));
-    const y = H - PY - ((Number(p.total || 0) - vmin) / vspan) * (H - PY * 2);
+    const x = safePoints.length <= 1 ? PX : PX + i * (GW / (safePoints.length - 1));
+    const y = H - PY - ((Number(p.total || 0) - vmin) / vspan) * GH;
     return { x, y, v: Number(p.total || 0) };
   });
 
-  const linePath = coords.map((p, i) => `${i === 0 ? 'M' : 'L'}${p.x},${p.y}`).join(' ');
-  const areaPath = coords.length > 0 ? `M${PX},${H - PY} L${coords[0].x},${coords[0].y} ` + coords.slice(1).map(p => `L${p.x},${p.y}`).join(' ') + ` L${coords[coords.length-1].x},${H - PY} Z` : '';
+  const lineD = coords.map((p, i) => `${i === 0 ? 'M' : 'L'}${p.x},${p.y}`).join(' ');
+  const areaD = coords.length > 0
+    ? `M${PX},${H - PY} L${coords[0].x},${coords[0].y} ` + coords.slice(1).map(p => `L${p.x},${p.y}`).join(' ') + ` L${coords[coords.length-1].x},${H - PY} Z`
+    : '';
   const latest = safePoints[safePoints.length - 1];
   const first = safePoints[0];
   const growth = Math.max(0, Number(latest?.total || 0) - Number(first?.total || 0));
+  const lastCoord = coords[coords.length - 1];
 
   return <div className="card p-5">
     <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
       <div>
-        <h3 className="text-lg font-black text-slate-900">服务端流量趋势</h3>
-        <p className="muted mt-0.5 text-xs">累计流量随时间变化的趋势，不代表实时带宽。</p>
+        <h3 className="text-base font-black text-slate-900">流量趋势</h3>
+        <p className="muted mt-0.5 text-xs">累计流量随时间变化，不代表实时带宽</p>
       </div>
-      <div className="flex gap-1 rounded-xl bg-slate-100 p-1">
-        {(['24h', '7d', '30d'] as const).map(item => <button key={item} className={cn('rounded-lg px-3 py-1.5 text-xs font-bold transition-colors', range === item ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700')} onClick={() => setRange(item)}>
-          {item === '24h' ? '24h' : item === '7d' ? '7d' : '30d'}
-        </button>)}
+      <div className="flex gap-1 rounded-lg bg-slate-100 p-1">
+        {(['24h', '7d', '30d'] as const).map(item => <button key={item} className={cn('rounded-md px-3 py-1.5 text-xs font-bold transition-colors', range === item ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700')} onClick={() => setRange(item)}>{item}</button>)}
       </div>
     </div>
 
     <div className="mt-4 grid grid-cols-3 gap-3">
-      <div className="rounded-xl bg-slate-50 px-3 py-2.5"><div className="text-xs text-slate-500">当前累计</div><div className="mt-0.5 text-base font-black text-slate-900">{fmtBytes(latest?.total || 0)}</div></div>
-      <div className="rounded-xl bg-emerald-50 px-3 py-2.5"><div className="text-xs text-emerald-700">区间增量</div><div className="mt-0.5 text-base font-black text-emerald-800">{fmtBytes(growth)}</div></div>
-      <div className="rounded-xl bg-blue-50 px-3 py-2.5"><div className="text-xs text-blue-700">采样点</div><div className="mt-0.5 text-base font-black text-blue-800">{safePoints.length}</div></div>
+      <div className="rounded-xl bg-slate-50 px-3 py-2"><div className="text-xs text-slate-500">累计流量</div><div className="mt-0.5 text-base font-black text-slate-900">{fmtBytes(latest?.total || 0)}</div></div>
+      <div className="rounded-xl bg-teal-50/60 px-3 py-2"><div className="text-xs text-teal-700">区间增量</div><div className="mt-0.5 text-base font-black text-teal-800">{fmtBytes(growth)}</div></div>
+      <div className="rounded-xl bg-slate-50 px-3 py-2"><div className="text-xs text-slate-500">采样点</div><div className="mt-0.5 text-base font-black text-slate-900">{safePoints.length}</div></div>
     </div>
 
-    <div className="mt-4 overflow-hidden rounded-2xl bg-gradient-to-b from-slate-50/50 to-white p-2">
-      <svg viewBox={`0 0 ${W} ${H}`} className="h-56 w-full" role="img" aria-label="流量趋势图">
+    <div className="mt-5">
+      <svg viewBox={`0 0 ${W} ${H}`} className="h-52 w-full" role="img" aria-label="流量趋势图">
         <defs>
-          <linearGradient id="tArea" x1="0" x2="0" y1="0" y2="1">
-            <stop offset="0%" stopColor="#0d9488" stopOpacity="0.25" />
-            <stop offset="100%" stopColor="#0d9488" stopOpacity="0.02" />
-          </linearGradient>
-          <linearGradient id="tLine" x1="0" x2="1" y1="0" y2="0">
-            <stop offset="0%" stopColor="#0f766e" />
-            <stop offset="100%" stopColor="#06b6d4" />
+          <linearGradient id="tFill" x1="0" x2="0" y1="0" y2="1">
+            <stop offset="0%" stopColor="#0d9488" stopOpacity="0.12" />
+            <stop offset="100%" stopColor="#0d9488" stopOpacity="0.01" />
           </linearGradient>
         </defs>
-        {/* Grid lines */}
+
+        {/* Horizontal grid lines */}
         {[0, 1, 2, 3].map(i => {
-          const gy = PY + i * ((H - PY * 2) / 3);
+          const gy = PY + i * (GH / 3);
           return <g key={i}>
-            <line x1={PX} x2={W - PX} y1={gy} y2={gy} stroke="#f1f5f9" strokeWidth="1" />
-            <text x={PX - 6} y={gy + 4} textAnchor="end" fill="#94a3b8" fontSize="10">{fmtBytes(vmin + vspan * (1 - i / 3))}</text>
+            <line x1={PX} x2={W - PX} y1={gy} y2={gy} stroke="#f1f5f9" strokeWidth="1" strokeDasharray="4 4" />
+            <text x={PX - 8} y={gy + 4} textAnchor="end" fill="#94a3b8" fontSize="10" fontFamily="ui-monospace,monospace">{fmtBytes(vmin + vspan * (1 - i / 3))}</text>
           </g>;
         })}
-        {/* Area + line */}
-        {coords.length > 1 && <path d={areaPath} fill="url(#tArea)" />}
-        <path d={linePath} fill="none" stroke="url(#tLine)" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
-        {/* Data dots */}
-        {coords.map((p, i) => {
-          const isLast = i === coords.length - 1;
-          return <g key={i}>
-            <circle cx={p.x} cy={p.y} r={isLast ? 6 : 2.5} fill={isLast ? '#0f766e' : '#cbd5e1'} stroke={isLast ? 'white' : 'none'} strokeWidth="2" />
-            {isLast && <text x={p.x} y={p.y - 12} textAnchor="middle" fill="#0f766e" fontSize="11" fontWeight="700">{fmtBytes(p.v)}</text>}
-          </g>;
-        })}
+
+        {/* Area fill */}
+        {coords.length > 1 && <path d={areaD} fill="url(#tFill)" />}
+
+        {/* Line */}
+        <path d={lineD} fill="none" stroke="#0d9488" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+
+        {/* Last point only */}
+        {lastCoord && <g>
+          <circle cx={lastCoord.x} cy={lastCoord.y} r={5} fill="white" stroke="#0d9488" strokeWidth="2.5" />
+          <text x={lastCoord.x} y={lastCoord.y - 14} textAnchor="middle" fill="#0d9488" fontSize="11" fontWeight="700" fontFamily="ui-monospace,monospace">{fmtBytes(lastCoord.v)}</text>
+        </g>}
       </svg>
     </div>
 
-    <div className="mt-2 flex items-center justify-between text-xs text-slate-400">
-      <span>最近采样：{latest?.time ? fmtDate(latest.time) : '-'}</span>
-      <span>{range === '24h' ? '最近 24 小时' : range === '7d' ? '最近 7 天' : '最近 30 天'}</span>
+    <div className="mt-3 flex items-center justify-between text-xs text-slate-400">
+      <span>最近：{latest?.time ? fmtDate(latest.time) : '-'}</span>
+      <span>{range === '24h' ? '近24小时' : range === '7d' ? '近7天' : '近30天'}</span>
     </div>
   </div>;
 }
