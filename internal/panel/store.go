@@ -925,10 +925,10 @@ func (s *Store) ValidateRule(r common.ForwardRule, actor common.User) error {
 		return fmt.Errorf("节点不存在")
 	}
 	if n.PortRangeStart > 0 && r.ListenPort < n.PortRangeStart {
-		return fmt.Errorf("入站端口不在节点允许范围内")
+		return fmt.Errorf("监听端口 %d 不在节点端口范围 (%d-%d) 内", r.ListenPort, n.PortRangeStart, n.PortRangeEnd)
 	}
 	if n.PortRangeEnd > 0 && r.ListenPort > n.PortRangeEnd {
-		return fmt.Errorf("入站端口不在节点允许范围内")
+		return fmt.Errorf("监听端口 %d 不在节点端口范围 (%d-%d) 内", r.ListenPort, n.PortRangeStart, n.PortRangeEnd)
 	}
 	rows, err := s.db.query(`SELECT * FROM forward_rules WHERE node_id=? AND listen_port=? AND id<>?`, r.NodeID, r.ListenPort, r.ID)
 	if err != nil {
