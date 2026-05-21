@@ -706,10 +706,13 @@ func (s *Store) DeleteNode(id string) error {
 			_ = s.db.execRaw("ROLLBACK;")
 		}
 	}()
-	for _, q := range []string{`DELETE FROM nodes WHERE id=?`, `DELETE FROM forward_rules WHERE node_id=?`, `DELETE FROM rule_statuses WHERE rule_id NOT IN (SELECT id FROM forward_rules)`} {
+	for _, q := range []string{`DELETE FROM nodes WHERE id=?`, `DELETE FROM forward_rules WHERE node_id=?`} {
 		if err := s.db.exec(q, id); err != nil {
 			return err
 		}
+	}
+	if err := s.db.exec(`DELETE FROM rule_statuses WHERE rule_id NOT IN (SELECT id FROM forward_rules)`); err != nil {
+		return err
 	}
 	if err := s.db.execRaw("COMMIT;"); err != nil {
 		return err
