@@ -157,7 +157,7 @@ function App() {
       </header>
 
       <section className="p-5 lg:p-8 animate-fade-in">
-        {page === 'dashboard' && <Dashboard nodes={nodes} rules={rules} statusOf={statusOf} />}
+        {page === 'dashboard' && <Dashboard nodes={nodes} rules={rules} statusOf={statusOf} isAdmin={isAdmin} onNewRule={() => setModal({ kind: 'rule' })} onNewNode={() => setModal({ kind: 'node', node: undefined })} />}
         {page === 'nodes' && <NodesPage nodes={filteredNodes} filters={filters.nodes} setFilters={setFilters} isAdmin={isAdmin} onDetail={n => setModal({ kind: 'node-detail', node: n })} onEdit={n => setModal({ kind: 'node', node: n })} onConfirm={n => setModal({ kind: 'confirm', title: '确认严格模式', message: '确认该节点 SSH 和转发服务均正常？确认后将保持严格防火墙模式。', danger: true, onConfirm: async () => { await updateNode(n.id, { name: n.name, port_range_start: n.port_range_start, port_range_end: n.port_range_end, firewall_mode: 'strict', max_rules: n.max_rules || 0 }); toast('已提交确认，等待节点同步严格防火墙状态'); await refreshAll(true); } })} onDelete={n => setModal({ kind: 'confirm', title: '删除节点', message: '删除节点会同时删除该节点规则，确认？', danger: true, onConfirm: async () => { await api(`/api/nodes/${n.id}`, { method: 'DELETE' }); toast('节点已删除'); await refreshAll(true); } })} />}
 {page === 'rules' && <RulesPage rules={filteredRules} nodes={nodes} users={users} filters={filters.rules} setFilters={setFilters} statusOf={statusOf} nodeName={nodeName} ownerName={ownerName} isAdmin={isAdmin} onNew={() => setModal({ kind: 'rule' })} onDetail={r => setModal({ kind: 'rule-detail', rule: r })} onEdit={r => setModal({ kind: 'rule', rule: r })} onTest={async r => { const d = await api<{ item: ConnectivityTest; message?: string }>(`/api/rules/${r.id}/test`, { method: 'POST' }); toast(d.message || '已提交检测'); setModal({ kind: 'rule-detail', rule: r }); }} onToggle={async r => { await api(`/api/rules/${r.id}/toggle`, { method: 'POST', body: JSON.stringify({ enabled: !r.enabled }) }); await refreshAll(true); }} onClone={async r => { await api(`/api/rules/${r.id}/clone`, { method: 'POST' }); toast('规则已克隆'); await refreshAll(true); }} onResetTraffic={async r => { await api(`/api/rules/reset-traffic/${r.id}`, { method: 'POST' }); toast('流量已重置'); await refreshAll(true); }} onDelete={r => setModal({ kind: 'confirm', title: '删除规则', message: '确认删除该规则？', danger: true, onConfirm: async () => { await api(`/api/rules/${r.id}`, { method: 'DELETE' }); toast('规则已删除'); await refreshAll(true); } })} toast={toast} />}
         {page === 'users' && <UsersPage users={users} nodes={nodes} onNew={() => setModal({ kind: 'user' })} onEdit={u => setModal({ kind: 'user', user: u })} onDelete={u => setModal({ kind: 'confirm', title: '删除用户', message: '确认删除该用户？该用户规则会被停用。', danger: true, onConfirm: async () => { await api(`/api/users/${u.id}`, { method: 'DELETE' }); toast('用户已删除'); await refreshAll(true); } })} />}
@@ -286,139 +286,187 @@ function useTrafficTrend(total: number) {
 }
 
 function TrafficTrend({ points, range, setRange }: { points: TrafficPoint[]; range: string; setRange: (v: string) => void }) {
-  const width = 720;
-  const height = 220;
-  const padX = 28;
-  const padY = 24;
-  const values = points.length ? points.map(p => Number(p.total || 0)) : [0];
-  const min = Math.min(...values);
-  const max = Math.max(...values);
-  const span = Math.max(1, max - min);
+  const W = 800; const H = 240; const PX = 40; const PY = 30;
   const safePoints = points.length ? points : [{ time: new Date().toISOString(), total: 0, delta: 0 }];
+  const values = safePoints.map(p => Number(p.total || 0));
+  const vmin = Math.min(...values); const vmax = Math.max(...values);
+  const vspan = Math.max(1, vmax - vmin);
 
   const coords = safePoints.map((p, i) => {
-    const x = safePoints.length <= 1 ? padX : padX + i * ((width - padX * 2) / (safePoints.length - 1));
-    const y = height - padY - ((Number(p.total || 0) - min) / span) * (height - padY * 2);
-    return { x, y };
+    const x = safePoints.length <= 1 ? PX : PX + i * ((W - PX * 2) / (safePoints.length - 1));
+    const y = H - PY - ((Number(p.total || 0) - vmin) / vspan) * (H - PY * 2);
+    return { x, y, v: Number(p.total || 0) };
   });
 
-  const line = coords.map(p => `${p.x},${p.y}`).join(' ');
-  const area = coords.length ? `${padX},${height - padY} ${line} ${width - padX},${height - padY}` : '';
+  const linePath = coords.map((p, i) => `${i === 0 ? 'M' : 'L'}${p.x},${p.y}`).join(' ');
+  const areaPath = coords.length > 0 ? `M${PX},${H - PY} L${coords[0].x},${coords[0].y} ` + coords.slice(1).map(p => `L${p.x},${p.y}`).join(' ') + ` L${coords[coords.length-1].x},${H - PY} Z` : '';
   const latest = safePoints[safePoints.length - 1];
   const first = safePoints[0];
   const growth = Math.max(0, Number(latest?.total || 0) - Number(first?.total || 0));
 
-  return <div className="card traffic-card p-5">
-    <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+  return <div className="card p-5">
+    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
       <div>
         <h3 className="text-lg font-black text-slate-900">服务端流量趋势</h3>
-        <p className="muted mt-1">面板每 5 分钟采样一次规则累计流量。趋势用于观察变化，不代表实时带宽。</p>
+        <p className="muted mt-0.5 text-xs">累计流量随时间变化的趋势，不代表实时带宽。</p>
       </div>
-
-      <div className="flex flex-wrap gap-2">
-        {['24h', '7d', '30d'].map(item => <button key={item} className={cn('btn', range === item && 'btn-primary')} onClick={() => setRange(item)}>
-          {item === '24h' ? '24 小时' : item === '7d' ? '7 天' : '30 天'}
+      <div className="flex gap-1 rounded-xl bg-slate-100 p-1">
+        {(['24h', '7d', '30d'] as const).map(item => <button key={item} className={cn('rounded-lg px-3 py-1.5 text-xs font-bold transition-colors', range === item ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700')} onClick={() => setRange(item)}>
+          {item === '24h' ? '24h' : item === '7d' ? '7d' : '30d'}
         </button>)}
       </div>
     </div>
 
-    <div className="mt-4 grid gap-3 sm:grid-cols-3">
-      <div className="rounded-2xl bg-slate-50 px-4 py-3">
-        <div className="text-xs font-bold text-slate-500">当前累计</div>
-        <div className="mt-1 text-xl font-black text-slate-900">{fmtBytes(latest?.total || 0)}</div>
-      </div>
-      <div className="rounded-2xl bg-emerald-50 px-4 py-3">
-        <div className="text-xs font-bold text-emerald-700">区间增量</div>
-        <div className="mt-1 text-xl font-black text-emerald-800">{fmtBytes(growth)}</div>
-      </div>
-      <div className="rounded-2xl bg-blue-50 px-4 py-3">
-        <div className="text-xs font-bold text-blue-700">采样点</div>
-        <div className="mt-1 text-xl font-black text-blue-800">{safePoints.length}</div>
-      </div>
+    <div className="mt-4 grid grid-cols-3 gap-3">
+      <div className="rounded-xl bg-slate-50 px-3 py-2.5"><div className="text-xs text-slate-500">当前累计</div><div className="mt-0.5 text-base font-black text-slate-900">{fmtBytes(latest?.total || 0)}</div></div>
+      <div className="rounded-xl bg-emerald-50 px-3 py-2.5"><div className="text-xs text-emerald-700">区间增量</div><div className="mt-0.5 text-base font-black text-emerald-800">{fmtBytes(growth)}</div></div>
+      <div className="rounded-xl bg-blue-50 px-3 py-2.5"><div className="text-xs text-blue-700">采样点</div><div className="mt-0.5 text-base font-black text-blue-800">{safePoints.length}</div></div>
     </div>
 
-    <div className="mt-5 overflow-hidden rounded-3xl border border-slate-200/70 bg-gradient-to-b from-white to-slate-50 p-3">
-      <svg viewBox={`0 0 ${width} ${height}`} className="h-56 w-full" role="img" aria-label="服务端流量趋势图">
+    <div className="mt-4 overflow-hidden rounded-2xl bg-gradient-to-b from-slate-50/50 to-white p-2">
+      <svg viewBox={`0 0 ${W} ${H}`} className="h-56 w-full" role="img" aria-label="流量趋势图">
         <defs>
-          <linearGradient id="trafficLine" x1="0" x2="1" y1="0" y2="0">
-            <stop offset="0%" stopColor="#0f766e" />
-            <stop offset="100%" stopColor="#2563eb" />
+          <linearGradient id="tArea" x1="0" x2="0" y1="0" y2="1">
+            <stop offset="0%" stopColor="#0d9488" stopOpacity="0.25" />
+            <stop offset="100%" stopColor="#0d9488" stopOpacity="0.02" />
           </linearGradient>
-          <linearGradient id="trafficArea" x1="0" x2="0" y1="0" y2="1">
-            <stop offset="0%" stopColor="#14b8a6" stopOpacity=".18" />
-            <stop offset="100%" stopColor="#2563eb" stopOpacity=".02" />
+          <linearGradient id="tLine" x1="0" x2="1" y1="0" y2="0">
+            <stop offset="0%" stopColor="#0f766e" />
+            <stop offset="100%" stopColor="#06b6d4" />
           </linearGradient>
         </defs>
-
+        {/* Grid lines */}
         {[0, 1, 2, 3].map(i => {
-          const y = padY + i * ((height - padY * 2) / 3);
-          return <line key={i} x1={padX} x2={width - padX} y1={y} y2={y} stroke="#e2e8f0" strokeDasharray="5 8" />;
+          const gy = PY + i * ((H - PY * 2) / 3);
+          return <g key={i}>
+            <line x1={PX} x2={W - PX} y1={gy} y2={gy} stroke="#f1f5f9" strokeWidth="1" />
+            <text x={PX - 6} y={gy + 4} textAnchor="end" fill="#94a3b8" fontSize="10">{fmtBytes(vmin + vspan * (1 - i / 3))}</text>
+          </g>;
         })}
-
-        {coords.length > 1 && <polygon points={area} fill="url(#trafficArea)" />}
-        <polyline points={line} fill="none" stroke="url(#trafficLine)" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" />
-        {coords.map((p, i) => <circle key={i} cx={p.x} cy={p.y} r={i === coords.length - 1 ? 5 : 3} fill={i === coords.length - 1 ? '#0f766e' : '#94a3b8'} />)}
+        {/* Area + line */}
+        {coords.length > 1 && <path d={areaPath} fill="url(#tArea)" />}
+        <path d={linePath} fill="none" stroke="url(#tLine)" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
+        {/* Data dots */}
+        {coords.map((p, i) => {
+          const isLast = i === coords.length - 1;
+          return <g key={i}>
+            <circle cx={p.x} cy={p.y} r={isLast ? 6 : 2.5} fill={isLast ? '#0f766e' : '#cbd5e1'} stroke={isLast ? 'white' : 'none'} strokeWidth="2" />
+            {isLast && <text x={p.x} y={p.y - 12} textAnchor="middle" fill="#0f766e" fontSize="11" fontWeight="700">{fmtBytes(p.v)}</text>}
+          </g>;
+        })}
       </svg>
     </div>
 
-    <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500">
+    <div className="mt-2 flex items-center justify-between text-xs text-slate-400">
       <span>最近采样：{latest?.time ? fmtDate(latest.time) : '-'}</span>
-      <span>数据范围：{range === '24h' ? '最近 24 小时' : range === '7d' ? '最近 7 天' : '最近 30 天'}</span>
+      <span>{range === '24h' ? '最近 24 小时' : range === '7d' ? '最近 7 天' : '最近 30 天'}</span>
     </div>
   </div>;
 }
 
-function Dashboard({ nodes, rules, statusOf }: { nodes: NodeItem[]; rules: RuleItem[]; statusOf: (id: string) => RuleStatus }) {
+function Dashboard({ nodes, rules, statusOf, isAdmin, onNewRule, onNewNode }: { nodes: NodeItem[]; rules: RuleItem[]; statusOf: (id: string) => RuleStatus; isAdmin: boolean; onNewRule: () => void; onNewNode: () => void }) {
   const traffic = rules.reduce((sum, rule) => sum + Number(rule.traffic_used || 0), 0);
+  const onlineCount = nodes.filter(online).length;
   const running = rules.filter(rule => statusOf(rule.id).state === 'running').length;
-  const errors = rules.filter(rule => statusOf(rule.id).state === 'error').length;
+  const stopped = rules.filter(rule => statusOf(rule.id).state === 'stopped').length;
+  const errorCount = rules.filter(rule => statusOf(rule.id).state === 'error').length;
+  const disabled = rules.filter(rule => !rule.enabled).length;
+  const total = rules.length;
   const [range, setRange] = useState('24h');
   const [points, setPoints] = useState<TrafficPoint[]>([]);
   const [trendError, setTrendError] = useState('');
+  const [auditItems, setAuditItems] = useState<any[]>([]);
 
   useEffect(() => {
     let cancelled = false;
     api<{ items: TrafficPoint[] }>(`/api/traffic/timeseries?range=${encodeURIComponent(range)}`)
-      .then(d => {
-        if (!cancelled) {
-          setPoints(d.items || []);
-          setTrendError('');
-        }
-      })
-      .catch((err: any) => {
-        if (!cancelled) setTrendError(err.message || '读取流量趋势失败');
-      });
+      .then(d => { if (!cancelled) { setPoints(d.items || []); setTrendError(''); } })
+      .catch((err: any) => { if (!cancelled) setTrendError(err.message || '读取流量趋势失败'); });
     return () => { cancelled = true; };
   }, [range, traffic]);
 
+  useEffect(() => {
+    api<{ items: any[] }>('/api/audit-logs?limit=5')
+      .then(d => setAuditItems(d.items || []))
+      .catch(() => {});
+  }, []);
+
+  const lastPoint = points.length > 0 ? points[points.length - 1] : null;
+  const trafficRate = lastPoint?.delta ? lastPoint.delta / 300 : 0;
+
   return <div className="grid gap-6">
-    <div className="hero-card rounded-[2rem] p-8 text-white shadow-soft">
-      <div className="text-sm font-bold text-teal-100">RelayGuard Console</div>
-      <h2 className="mt-3 text-3xl font-black">运行状态</h2>
-      <p className="mt-2 max-w-2xl text-slate-100/90">查看节点、转发规则、流量趋势和异常状态。</p>
+    {/* Hero */}
+    <div className="hero-card rounded-[2rem] p-6 sm:p-8 text-white shadow-soft">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <div className="text-sm font-bold text-teal-100">RelayGuard Console</div>
+          <h2 className="mt-2 text-2xl sm:text-3xl font-black">运行状态</h2>
+          <p className="mt-2 max-w-2xl text-slate-100/90 text-sm">节点、转发规则、流量趋势与异常监控一览。</p>
+        </div>
+        {isAdmin && <div className="flex flex-wrap gap-2 sm:self-end">
+          <button className="rounded-xl bg-white/15 px-4 py-2 text-sm font-bold text-white backdrop-blur hover:bg-white/25 transition-colors" onClick={onNewRule}>＋ 新增规则</button>
+          <button className="rounded-xl bg-white/10 px-4 py-2 text-sm font-bold text-white/90 backdrop-blur hover:bg-white/20 transition-colors" onClick={onNewNode}>＋ 接入节点</button>
+        </div>}
+      </div>
     </div>
 
-    <div className="grid gap-4 md:grid-cols-4">
-      <Stat title="在线节点" value={`${nodes.filter(online).length}/${nodes.length}`} />
-      <Stat title="运行规则" value={`${running}/${rules.length}`} />
+    {/* Stats */}
+    <div className="grid gap-3 grid-cols-2 md:grid-cols-4">
+      <Stat title="在线节点" value={`${onlineCount}/${nodes.length}`} sub={`${nodes.length - onlineCount} 离线`} tone={onlineCount < nodes.length ? 'warn' : undefined} />
+      <Stat title="运行规则" value={`${running}/${total}`} sub={`${errorCount} 异常`} tone={errorCount > 0 ? 'danger' : undefined} />
       <Stat title="累计流量" value={fmtBytes(traffic)} />
-      <Stat title="异常规则" value={String(errors)} danger={errors > 0} />
+      <Stat title="当前速率" value={fmtBytes(trafficRate) + '/s'} sub="估算值" />
     </div>
 
+    {/* Rule Status Distribution */}
+    {total > 0 && <div className="card p-4">
+      <div className="flex flex-wrap items-center gap-3 sm:gap-5">
+        <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">规则状态</span>
+        {[{ label: '运行中', count: running, cls: 'bg-emerald-500' },
+          { label: '已停止', count: stopped, cls: 'bg-amber-500' },
+          { label: '异常', count: errorCount, cls: 'bg-rose-500' },
+          { label: '已停用', count: disabled, cls: 'bg-slate-300' },
+        ].map(s => <div key={s.label} className="flex items-center gap-2">
+          <span className={`inline-block h-3 w-3 rounded-sm ${s.cls}`} />
+          <span className="text-sm font-semibold text-slate-700">{s.label} <span className="text-slate-400">{s.count}</span></span>
+        </div>)}
+        <div className="ml-auto hidden sm:block">
+          <div className="flex h-2 overflow-hidden rounded-full bg-slate-100 w-40">
+            {running > 0 && <div className="bg-emerald-500" style={{ width: `${(running/total)*100}%` }} />}
+            {stopped > 0 && <div className="bg-amber-500" style={{ width: `${(stopped/total)*100}%` }} />}
+            {errorCount > 0 && <div className="bg-rose-500" style={{ width: `${(errorCount/total)*100}%` }} />}
+            {disabled > 0 && <div className="bg-slate-300" style={{ width: `${(disabled/total)*100}%` }} />}
+          </div>
+        </div>
+      </div>
+    </div>}
+
+    {/* Traffic Trend */}
     {trendError ? <div className="rounded-2xl bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-700">{trendError}</div> : null}
     <TrafficTrend points={points} range={range} setRange={setRange} />
 
+    {/* Node Overview + Traffic Top */}
     <div className="grid gap-4 lg:grid-cols-2">
       <div className="card p-5">
         <h3 className="font-black text-slate-900">节点概览</h3>
         <div className="mt-4 grid gap-3">
-          {nodes.slice(0, 6).map(n => <div key={n.id} className="flex items-center justify-between rounded-2xl bg-slate-50/80 p-3">
-            <div>
-              <b>{n.name}</b>
-              <div className="muted">{n.public_ip || '-'} · {n.os || '-'}</div>
-            </div>
-            <Badge tone={online(n) ? 'ok' : 'muted'}>{online(n) ? '在线' : '离线'}</Badge>
-          </div>)}
+          {nodes.slice(0, 6).map(n => {
+            const m = n.last_metrics || {};
+            return <div key={n.id} className="flex items-center justify-between rounded-2xl bg-slate-50/80 p-3">
+              <div className="min-w-0 flex-1">
+                <b className="truncate block">{n.name}</b>
+                <div className="muted text-xs">{n.public_ip || '-'} · {n.os || '-'}</div>
+                {online(n) && m.cpu_percent !== undefined && <div className="mt-1.5 flex items-center gap-2">
+                  <span className="text-xs text-slate-400">CPU {Math.round(m.cpu_percent || 0)}%</span>
+                  <div className="h-1.5 w-16 overflow-hidden rounded-full bg-slate-200">
+                    <div className="h-full rounded-full bg-blue-500" style={{ width: `${Math.min(100, m.cpu_percent || 0)}%` }} />
+                  </div>
+                </div>}
+              </div>
+              <Badge tone={online(n) ? 'ok' : 'muted'}>{online(n) ? '在线' : '离线'}</Badge>
+            </div>;
+          })}
+          {nodes.length === 0 && <div className="text-center text-slate-400 py-4 text-sm">暂无节点</div>}
         </div>
       </div>
 
@@ -428,19 +476,34 @@ function Dashboard({ nodes, rules, statusOf }: { nodes: NodeItem[]; rules: RuleI
           {[...rules].sort((a, b) => Number(b.traffic_used || 0) - Number(a.traffic_used || 0)).slice(0, 6).map(r => <div key={r.id} className="rounded-2xl bg-slate-50/80 p-3">
             <div className="flex justify-between gap-4">
               <b className="truncate">{r.name}</b>
-              <span className="font-semibold text-slate-700">{fmtBytes(r.traffic_used)}</span>
+              <span className="font-semibold text-slate-700 text-sm whitespace-nowrap">{fmtBytes(r.traffic_used)}</span>
             </div>
             <div className="mt-2 h-2 overflow-hidden rounded-full bg-slate-200">
               <i className="block h-full rounded-full bg-gradient-to-r from-teal-500 to-blue-500" style={{ width: `${Math.min(100, (Number(r.traffic_used || 0) / Math.max(1, Number(r.traffic_limit || r.traffic_used || 1))) * 100)}%` }} />
             </div>
           </div>)}
+          {rules.length === 0 && <div className="text-center text-slate-400 py-4 text-sm">暂无规则</div>}
         </div>
       </div>
+    </div>
+
+    {/* Recent Activity */}
+    <div className="card p-5">
+      <h3 className="font-black text-slate-900">最近活动</h3>
+      {auditItems.length === 0 ? <div className="mt-4 text-center text-slate-400 text-sm py-2">暂无记录</div> :
+      <div className="mt-3 grid gap-1">
+        {auditItems.map((x: any, i: number) => <div key={i} className="flex items-center gap-3 rounded-xl px-3 py-2 hover:bg-slate-50 text-sm">
+          <span className="text-xs text-slate-400 whitespace-nowrap w-20">{fmtDate(x.created_at).split(' ')[1] || fmtDate(x.created_at)}</span>
+          <span className="font-mono text-xs text-slate-500 w-16 truncate">{x.user_id}</span>
+          <span className="font-mono text-xs text-slate-600">{x.action}</span>
+          <span className="text-xs text-slate-400 truncate flex-1 text-right">{x.detail}</span>
+        </div>)}
+      </div>}
     </div>
   </div>;
 }
 
-function Stat({ title, value, danger }: { title: string; value: string; danger?: boolean }) { return <div className="card p-5"><div className="muted">{title}</div><div className={cn('mt-2 text-3xl font-black', danger && 'text-rose-600')}>{value}</div></div>; }
+function Stat({ title, value, sub, tone }: { title: string; value: string; sub?: string; tone?: 'warn' | 'danger' }) { return <div className="card p-4"><div className="muted text-xs">{title}</div><div className={cn('mt-1.5 text-2xl font-black', tone === 'danger' && 'text-rose-600', tone === 'warn' && 'text-amber-600')}>{value}</div>{sub && <div className="mt-0.5 text-xs text-slate-400">{sub}</div>}</div>; }
 function Badge({ tone, children }: { tone: 'ok' | 'warn' | 'danger' | 'muted'; children: React.ReactNode }) { return <span className={cn('badge', tone === 'ok' && 'badge-ok', tone === 'warn' && 'badge-warn', tone === 'danger' && 'badge-danger', tone === 'muted' && 'badge-muted')}>{children}</span>; }
 
 function NodesPage(props: { nodes: NodeItem[]; filters: any; setFilters: any; isAdmin: boolean; onDetail: (n: NodeItem)=>void; onEdit: (n: NodeItem)=>void; onConfirm: (n: NodeItem)=>void; onDelete: (n: NodeItem)=>void }) {
