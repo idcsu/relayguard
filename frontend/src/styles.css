@@ -41,16 +41,16 @@ textarea {
 
   .hero-card {
     background:
-      radial-gradient(circle at 15% 20%, rgba(45, 212, 191, .22), transparent 26rem),
-      linear-gradient(135deg, #0f2f3a 0%, #173b4a 45%, #1e3a5f 100%);
+      radial-gradient(circle at 15% 20%, rgba(59, 130, 246, .28), transparent 26rem),
+      linear-gradient(135deg, #0f1b3a 0%, #15254d 45%, #1e3a8a 100%);
   }
 
   .btn {
-    @apply inline-flex min-h-10 items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 shadow-sm transition hover:-translate-y-0.5 hover:border-teal-200 hover:bg-teal-50 hover:text-teal-800 disabled:cursor-not-allowed disabled:opacity-50;
+    @apply inline-flex min-h-10 items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 shadow-sm transition hover:-translate-y-0.5 hover:border-blue-200 hover:bg-blue-50 hover:text-blue-800 disabled:cursor-not-allowed disabled:opacity-50;
   }
 
   .btn-primary {
-    @apply border-transparent bg-gradient-to-r from-teal-600 to-blue-600 text-white shadow-lg shadow-teal-500/20 hover:from-teal-500 hover:to-blue-500 hover:text-white;
+    @apply border-transparent bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-lg shadow-blue-500/20 hover:from-blue-500 hover:to-indigo-500 hover:text-white;
   }
 
   .btn-danger {
@@ -62,7 +62,7 @@ textarea {
   }
 
   .input {
-    @apply w-full rounded-2xl border border-slate-200 bg-white/90 px-4 py-2.5 text-sm outline-none transition focus:border-teal-400 focus:ring-4 focus:ring-teal-100;
+    @apply w-full rounded-2xl border border-slate-200 bg-white/90 px-4 py-2.5 text-sm outline-none transition focus:border-blue-400 focus:ring-4 focus:ring-blue-100;
   }
 
   .label {
@@ -94,7 +94,7 @@ textarea {
   }
 
   .table tbody tr {
-    @apply transition hover:bg-teal-50/40;
+    @apply transition hover:bg-blue-50/40;
   }
 
   .badge {
@@ -130,8 +130,8 @@ textarea {
 @layer components {
   .login-brand-panel {
     background:
-      radial-gradient(circle at 12% 20%, rgba(45, 212, 191, .22), transparent 22rem),
-      linear-gradient(135deg, #0f2f3a 0%, #173b4a 52%, #1e3a5f 100%);
+      radial-gradient(circle at 12% 20%, rgba(59, 130, 246, .28), transparent 22rem),
+      linear-gradient(135deg, #0f1b3a 0%, #15254d 52%, #1e3a8a 100%);
   }
 
   .copy-pill {
@@ -140,5 +140,35 @@ textarea {
 
   .btn-xs {
     @apply min-h-8 rounded-xl px-3 py-1 text-xs;
+  }
+
+  /* 给小白看的「这是什么」说明条 */
+  .page-tip {
+    @apply flex items-start gap-3 rounded-2xl border border-blue-100 bg-blue-50/70 px-4 py-3 text-sm text-blue-900;
+  }
+
+  .page-tip-icon {
+    @apply mt-0.5 grid h-5 w-5 flex-none place-items-center rounded-full bg-blue-500 text-xs font-black text-white;
+  }
+
+  /* 表头/标签旁的小问号，悬停看解释 */
+  .help-dot {
+    @apply ml-1 inline-grid h-4 w-4 cursor-help place-items-center rounded-full bg-slate-200 text-[10px] font-black text-slate-500 align-middle;
+  }
+
+  .hint {
+    @apply text-xs text-slate-400;
+  }
+
+  .empty {
+    @apply py-10 text-center text-sm text-slate-400;
+  }
+}
+
+/* 键盘可达性：聚焦时显示清晰的焦点环 */
+@layer utilities {
+  .btn:focus-visible,
+  .input:focus-visible {
+    @apply outline-none ring-4 ring-blue-100;
   }
 }

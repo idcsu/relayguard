@@ -24,9 +24,8 @@ vet:
 
 frontend:
 	cd frontend && npm install && npm run build
-	rm -rf web/dist internal/panel/webdist
-	mkdir -p web internal/panel
-	cp -a frontend/dist web/dist
+	rm -rf internal/panel/webdist
+	mkdir -p internal/panel
 	cp -a frontend/dist internal/panel/webdist
 
 docker-panel:

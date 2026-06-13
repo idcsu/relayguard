@@ -5,7 +5,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/relayguard-panel -addr :7080 -data /etc/relayguard
+ExecStart=/usr/local/bin/relayguard-panel -addr 127.0.0.1:10026 -data /etc/relayguard
 Restart=always
 RestartSec=3
 LimitNOFILE=1048576

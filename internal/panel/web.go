@@ -53,7 +53,8 @@ APP="relayguard-panel"
 BIN_DIR="/usr/local/bin"
 DATA_DIR="/etc/relayguard"
 SERVICE="relayguard-panel.service"
-PORT="7080"
+BIND_ADDR="127.0.0.1"
+PORT="10026"
 
 red(){ echo -e "\033[31m$*\033[0m"; }
 green(){ echo -e "\033[32m$*\033[0m"; }
@@ -85,8 +86,10 @@ download_bin(){
 
 install_panel(){
   need_root; install_deps
-  read -rp "请输入面板监听端口 [7080]: " input_port
-  PORT="${input_port:-7080}"
+  read -rp "请输入面板监听地址 [${BIND_ADDR}]（反代推荐 127.0.0.1）: " input_bind
+  BIND_ADDR="${input_bind:-${BIND_ADDR}}"
+  read -rp "请输入面板监听端口 [${PORT}]: " input_port
+  PORT="${input_port:-${PORT}}"
   mkdir -p "$DATA_DIR"
   download_bin
   cat >/etc/systemd/system/${SERVICE} <<EOF2
@@ -97,7 +100,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=${BIN_DIR}/${APP} -addr :${PORT} -data ${DATA_DIR}
+ExecStart=${BIN_DIR}/${APP} -addr ${BIND_ADDR}:${PORT} -data ${DATA_DIR}
 Restart=always
 RestartSec=3
 LimitNOFILE=1048576
@@ -110,7 +113,7 @@ EOF2
   systemctl daemon-reload
   systemctl enable --now ${SERVICE}
   green "安装完成"
-  echo "面板地址：http://服务器IP:${PORT}"
+  echo "面板监听：http://${BIND_ADDR}:${PORT}（反代到此地址，用 HTTPS 域名访问）"
   echo "请查看初始密码：journalctl -u ${SERVICE} -n 80 --no-pager"
 }
 

@@ -3,7 +3,7 @@ import { createRoot } from 'react-dom/client';
 import './styles.css';
 import { api } from './api';
 import type { BackupItem, ConnectivityTest, NodeItem, RuleItem, RuleStatus, SessionItem, TrafficPoint, User } from './types';
-import { cn, firewallStatus, fmtBytes, fmtDate, fmtShortDate, online, pct, protocolText, roleText, statusText } from './utils';
+import { actionText, actorText, cn, firewallStatus, fmtBytes, fmtDate, online, pct, protocolText, roleText, statusText, targetText } from './utils';
 
 type Page = 'dashboard' | 'nodes' | 'rules' | 'users' | 'tokens' | 'audit' | 'backup' | 'account' | 'security' | 'settings';
 type Toast = { id: number; text: string; tone?: 'ok' | 'warn' | 'danger' };
@@ -52,6 +52,7 @@ function App() {
   const statusOf = useCallback((id: string) => statuses[id] || {}, [statuses]);
   const nodeName = useCallback((id?: string) => nodes.find(n => n.id === id)?.name || id || '-', [nodes]);
   const ownerName = useCallback((id?: string) => users.find(u => u.id === id)?.username || (id === user?.id ? user.username : id || '-'), [users, user]);
+  const ruleName = useCallback((id: string) => rules.find(r => r.id === id)?.name, [rules]);
 
   const toast = useCallback((text: string, tone: Toast['tone'] = 'ok') => {
     const id = Date.now() + Math.random();
@@ -129,7 +130,7 @@ function App() {
       <div className="p-6">
         <div className="rounded-3xl bg-white/10 p-4 ring-1 ring-white/10">
           <div className="text-2xl font-black">RelayGuard</div>
-          <div className="mt-1 text-sm text-slate-300">中转卫士 · {version || 'v0.12'}</div>
+          <div className="mt-1 text-sm text-slate-300">中转卫士{version ? ` · v${version}` : ''}</div>
         </div>
         <nav className="mt-6 grid gap-1">
           {visibleNavs.map(([id, name, icon]) => <button key={id} onClick={() => navTo(id)} className={cn('flex items-center gap-3 rounded-2xl px-4 py-3 text-left text-sm font-bold transition', page === id ? 'bg-white text-slate-950 shadow-lg' : 'text-slate-300 hover:bg-white/10 hover:text-white')}>
@@ -159,12 +160,12 @@ function App() {
       </header>
 
       <section className="p-5 lg:p-8 animate-fade-in">
-        {page === 'dashboard' && <Dashboard nodes={nodes} rules={rules} statusOf={statusOf} isAdmin={isAdmin} onNewRule={() => setModal({ kind: 'rule' })} onNewNode={() => setModal({ kind: 'node', node: undefined })} />}
+        {page === 'dashboard' && <Dashboard nodes={nodes} rules={rules} users={users} statusOf={statusOf} isAdmin={isAdmin} onNewRule={() => setModal({ kind: 'rule' })} onNewNode={() => setModal({ kind: 'node', node: undefined })} />}
         {page === 'nodes' && <NodesPage nodes={filteredNodes} filters={filters.nodes} setFilters={setFilters} isAdmin={isAdmin} onDetail={n => setModal({ kind: 'node-detail', node: n })} onEdit={n => setModal({ kind: 'node', node: n })} onConfirm={n => setModal({ kind: 'confirm', title: '确认严格模式', message: '确认该节点 SSH 和转发服务均正常？确认后将保持严格防火墙模式。', danger: true, onConfirm: async () => { await updateNode(n.id, { name: n.name, port_range_start: n.port_range_start, port_range_end: n.port_range_end, firewall_mode: 'strict', max_rules: n.max_rules || 0 }); toast('已提交确认，等待节点同步严格防火墙状态'); await refreshAll(true); } })} onDelete={n => setModal({ kind: 'confirm', title: '删除节点', message: '删除节点会同时删除该节点规则，确认？', danger: true, onConfirm: async () => { await api(`/api/nodes/${n.id}`, { method: 'DELETE' }); toast('节点已删除'); await refreshAll(true); } })} />}
 {page === 'rules' && <RulesPage rules={filteredRules} nodes={nodes} users={users} filters={filters.rules} setFilters={setFilters} statusOf={statusOf} nodeName={nodeName} ownerName={ownerName} isAdmin={isAdmin} onNew={() => setModal({ kind: 'rule' })} onDetail={r => setModal({ kind: 'rule-detail', rule: r })} onEdit={r => setModal({ kind: 'rule', rule: r })} onTest={async r => { const d = await api<{ item: ConnectivityTest; message?: string }>(`/api/rules/${r.id}/test`, { method: 'POST' }); toast(d.message || '已提交检测'); setModal({ kind: 'rule-detail', rule: r }); }} onToggle={async r => { await api(`/api/rules/${r.id}/toggle`, { method: 'POST', body: JSON.stringify({ enabled: !r.enabled }) }); await refreshAll(true); }} onClone={async r => { await api(`/api/rules/${r.id}/clone`, { method: 'POST' }); toast('规则已克隆'); await refreshAll(true); }} onResetTraffic={async r => { await api(`/api/rules/reset-traffic/${r.id}`, { method: 'POST' }); toast('流量已重置'); await refreshAll(true); }} onDelete={r => setModal({ kind: 'confirm', title: '删除规则', message: '确认删除该规则？', danger: true, onConfirm: async () => { await api(`/api/rules/${r.id}`, { method: 'DELETE' }); toast('规则已删除'); await refreshAll(true); } })} toast={toast} />}
         {page === 'users' && <UsersPage users={users} nodes={nodes} onNew={() => setModal({ kind: 'user' })} onEdit={u => setModal({ kind: 'user', user: u })} onDelete={u => setModal({ kind: 'confirm', title: '删除用户', message: '确认删除该用户？该用户规则会被停用。', danger: true, onConfirm: async () => { await api(`/api/users/${u.id}`, { method: 'DELETE' }); toast('用户已删除'); await refreshAll(true); } })} />}
         {page === 'tokens' && <TokensPage onCreate={() => setModal({ kind: 'token' })} />}
-        {page === 'audit' && <AuditPage />}
+        {page === 'audit' && <AuditPage users={users} nodes={nodes} ruleName={ruleName} />}
         {page === 'backup' && <BackupPage toast={toast} confirm={(title, message, onConfirm) => setModal({ kind: 'confirm', title, message, danger: true, onConfirm })} />}
         {page === 'account' && <AccountPage user={user} setUser={setUser} toast={toast} openTotp={() => setModal({ kind: 'totp' })} />}
         {page === 'settings' && <SettingsPage toast={toast} />}
@@ -229,7 +230,7 @@ function LoginPage({ onLogin, toast }: { onLogin: (u: User, v?: string) => void;
 
         {message && <div className={cn(
           'rounded-2xl px-4 py-3 text-sm font-semibold',
-          message.includes('成功') || message.includes('正在登录') ? 'bg-teal-50 text-teal-700' : 'bg-rose-50 text-rose-700'
+          message.includes('成功') || message.includes('正在登录') ? 'bg-blue-50 text-blue-700' : 'bg-rose-50 text-rose-700'
         )}>{message}</div>}
 
         <label className="label">用户名
@@ -250,41 +251,6 @@ function LoginPage({ onLogin, toast }: { onLogin: (u: User, v?: string) => void;
       </form>
     </div>
   </div>;
-}
-
-type TrendPoint = { ts: number; total: number };
-
-function useTrafficTrend(total: number) {
-  const [points, setPoints] = useState<TrendPoint[]>([]);
-
-  useEffect(() => {
-    const key = 'relayguard:traffic-trend:v1';
-    const now = Date.now();
-    let arr: TrendPoint[] = [];
-
-    try {
-      arr = JSON.parse(localStorage.getItem(key) || '[]');
-    } catch {
-      arr = [];
-    }
-
-    const cutoff = now - 24 * 60 * 60 * 1000;
-    arr = arr.filter(p => p && typeof p.ts === 'number' && typeof p.total === 'number' && p.ts >= cutoff);
-
-    const last = arr[arr.length - 1];
-    const changed = !last || Math.abs(Number(last.total || 0) - Number(total || 0)) >= 1024;
-    const stale = !last || now - last.ts >= 5 * 60 * 1000;
-
-    if (!last || changed || stale) {
-      arr.push({ ts: now, total: Number(total || 0) });
-    }
-
-    arr = arr.slice(-96);
-    localStorage.setItem(key, JSON.stringify(arr));
-    setPoints(arr);
-  }, [total]);
-
-  return points;
 }
 
 function TrafficTrend({ points, range, setRange }: { points: TrafficPoint[]; range: string; setRange: (v: string) => void }) {
@@ -322,7 +288,7 @@ function TrafficTrend({ points, range, setRange }: { points: TrafficPoint[]; ran
 
     <div className="mt-4 grid grid-cols-3 gap-3">
       <div className="rounded-xl bg-slate-50 px-3 py-2"><div className="text-xs text-slate-500">累计流量</div><div className="mt-0.5 text-base font-black text-slate-900">{fmtBytes(latest?.total || 0)}</div></div>
-      <div className="rounded-xl bg-teal-50/60 px-3 py-2"><div className="text-xs text-teal-700">区间增量</div><div className="mt-0.5 text-base font-black text-teal-800">{fmtBytes(growth)}</div></div>
+      <div className="rounded-xl bg-blue-50/70 px-3 py-2"><div className="text-xs text-blue-700">区间增量</div><div className="mt-0.5 text-base font-black text-blue-800">{fmtBytes(growth)}</div></div>
       <div className="rounded-xl bg-slate-50 px-3 py-2"><div className="text-xs text-slate-500">采样点</div><div className="mt-0.5 text-base font-black text-slate-900">{safePoints.length}</div></div>
     </div>
 
@@ -330,8 +296,8 @@ function TrafficTrend({ points, range, setRange }: { points: TrafficPoint[]; ran
       <svg viewBox={`0 0 ${W} ${H}`} className="h-52 w-full" role="img" aria-label="流量趋势图">
         <defs>
           <linearGradient id="tFill" x1="0" x2="0" y1="0" y2="1">
-            <stop offset="0%" stopColor="#0d9488" stopOpacity="0.12" />
-            <stop offset="100%" stopColor="#0d9488" stopOpacity="0.01" />
+            <stop offset="0%" stopColor="#2563eb" stopOpacity="0.16" />
+            <stop offset="100%" stopColor="#2563eb" stopOpacity="0.01" />
           </linearGradient>
         </defs>
 
@@ -348,12 +314,12 @@ function TrafficTrend({ points, range, setRange }: { points: TrafficPoint[]; ran
         {coords.length > 1 && <path d={areaD} fill="url(#tFill)" />}
 
         {/* Line */}
-        <path d={lineD} fill="none" stroke="#0d9488" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+        <path d={lineD} fill="none" stroke="#2563eb" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
 
         {/* Last point only */}
         {lastCoord && <g>
-          <circle cx={lastCoord.x} cy={lastCoord.y} r={5} fill="white" stroke="#0d9488" strokeWidth="2.5" />
-          <text x={lastCoord.x} y={lastCoord.y - 14} textAnchor="middle" fill="#0d9488" fontSize="11" fontWeight="700" fontFamily="ui-monospace,monospace">{fmtBytes(lastCoord.v)}</text>
+          <circle cx={lastCoord.x} cy={lastCoord.y} r={5} fill="white" stroke="#2563eb" strokeWidth="2.5" />
+          <text x={lastCoord.x} y={lastCoord.y - 14} textAnchor="middle" fill="#2563eb" fontSize="11" fontWeight="700" fontFamily="ui-monospace,monospace">{fmtBytes(lastCoord.v)}</text>
         </g>}
       </svg>
     </div>
@@ -365,7 +331,7 @@ function TrafficTrend({ points, range, setRange }: { points: TrafficPoint[]; ran
   </div>;
 }
 
-function Dashboard({ nodes, rules, statusOf, isAdmin, onNewRule, onNewNode }: { nodes: NodeItem[]; rules: RuleItem[]; statusOf: (id: string) => RuleStatus; isAdmin: boolean; onNewRule: () => void; onNewNode: () => void }) {
+function Dashboard({ nodes, rules, users, statusOf, isAdmin, onNewRule, onNewNode }: { nodes: NodeItem[]; rules: RuleItem[]; users: User[]; statusOf: (id: string) => RuleStatus; isAdmin: boolean; onNewRule: () => void; onNewNode: () => void }) {
   const traffic = rules.reduce((sum, rule) => sum + Number(rule.traffic_used || 0), 0);
   const onlineCount = nodes.filter(online).length;
   const running = rules.filter(rule => statusOf(rule.id).state === 'running').length;
@@ -400,7 +366,7 @@ function Dashboard({ nodes, rules, statusOf, isAdmin, onNewRule, onNewNode }: { 
     <div className="hero-card rounded-[2rem] p-6 sm:p-8 text-white shadow-soft">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div>
-          <div className="text-sm font-bold text-teal-100">RelayGuard Console</div>
+          <div className="text-sm font-bold text-blue-100">RelayGuard 控制台</div>
           <h2 className="mt-2 text-2xl sm:text-3xl font-black">运行状态</h2>
           <p className="mt-2 max-w-2xl text-slate-100/90 text-sm">节点、转发规则、流量趋势与异常监控一览。</p>
         </div>
@@ -413,10 +379,10 @@ function Dashboard({ nodes, rules, statusOf, isAdmin, onNewRule, onNewNode }: { 
 
     {/* Stats */}
     <div className="grid gap-3 grid-cols-2 md:grid-cols-4">
-      <Stat title="在线节点" value={`${onlineCount}/${nodes.length}`} sub={`${nodes.length - onlineCount} 离线`} tone={onlineCount < nodes.length ? 'warn' : undefined} />
-      <Stat title="运行规则" value={`${running}/${total}`} sub={`${errorCount} 异常`} tone={errorCount > 0 ? 'danger' : undefined} />
-      <Stat title="累计流量" value={fmtBytes(traffic)} />
-      <Stat title="当前速率" value={fmtBytes(trafficRate) + '/s'} sub="估算值" />
+      <Stat title="在线节点" value={`${onlineCount}/${nodes.length}`} sub={`${nodes.length - onlineCount} 离线`} tone={onlineCount < nodes.length ? 'warn' : undefined} accent="blue" icon="◈" />
+      <Stat title="运行规则" value={`${running}/${total}`} sub={`${errorCount} 异常`} tone={errorCount > 0 ? 'danger' : undefined} accent="emerald" icon="⇄" />
+      <Stat title="累计流量" value={fmtBytes(traffic)} accent="violet" icon="▦" />
+      <Stat title="当前速率" value={fmtBytes(trafficRate) + '/s'} sub="按最近采样估算" accent="amber" icon="◔" />
     </div>
 
     {/* Rule Status Distribution */}
@@ -474,13 +440,13 @@ function Dashboard({ nodes, rules, statusOf, isAdmin, onNewRule, onNewNode }: { 
       <div className="card p-5">
         <h3 className="font-black text-slate-900">流量 Top 规则</h3>
         <div className="mt-4 grid gap-3">
-          {[...rules].sort((a, b) => Number(b.traffic_used || 0) - Number(a.traffic_used || 0)).slice(0, 6).map(r => <div key={r.id} className="rounded-2xl bg-slate-50/80 p-3">
+          {[...rules].sort((a, b) => Number(b.traffic_used || 0) - Number(a.traffic_used || 0)).slice(0, 6).map((r, i) => <div key={r.id} className="rounded-2xl bg-slate-50/80 p-3">
             <div className="flex justify-between gap-4">
               <b className="truncate">{r.name}</b>
               <span className="font-semibold text-slate-700 text-sm whitespace-nowrap">{fmtBytes(r.traffic_used)}</span>
             </div>
             <div className="mt-2 h-2 overflow-hidden rounded-full bg-slate-200">
-              <i className="block h-full rounded-full bg-gradient-to-r from-teal-500 to-blue-500" style={{ width: `${Math.min(100, (Number(r.traffic_used || 0) / Math.max(1, Number(r.traffic_limit || r.traffic_used || 1))) * 100)}%` }} />
+              <i className={cn('block h-full rounded-full bg-gradient-to-r', BAR_COLORS[i % BAR_COLORS.length])} style={{ width: `${Math.min(100, (Number(r.traffic_used || 0) / Math.max(1, Number(r.traffic_limit || r.traffic_used || 1))) * 100)}%` }} />
             </div>
           </div>)}
           {rules.length === 0 && <div className="text-center text-slate-400 py-4 text-sm">暂无规则</div>}
@@ -493,22 +459,59 @@ function Dashboard({ nodes, rules, statusOf, isAdmin, onNewRule, onNewNode }: { 
       <h3 className="font-black text-slate-900">最近活动</h3>
       {auditItems.length === 0 ? <div className="mt-4 text-center text-slate-400 text-sm py-2">暂无记录</div> :
       <div className="mt-3 grid gap-1">
-        {auditItems.map((x: any, i: number) => <div key={i} className="flex items-center gap-3 rounded-xl px-3 py-2 hover:bg-slate-50 text-sm">
+        {auditItems.map((x: any, i: number) => { const cat = AUDIT_CATEGORY[x.action] || '其他'; return <div key={i} className="flex items-center gap-3 rounded-xl px-3 py-2 hover:bg-slate-50 text-sm">
           <span className="text-xs text-slate-400 whitespace-nowrap w-20">{fmtDate(x.created_at).split(' ')[1] || fmtDate(x.created_at)}</span>
-          <span className="font-mono text-xs text-slate-500 w-16 truncate">{x.user_id}</span>
-          <span className="font-mono text-xs text-slate-600">{x.action}</span>
-          <span className="text-xs text-slate-400 truncate flex-1 text-right">{x.detail}</span>
-        </div>)}
+          <span className={cn('rounded-lg px-2 py-0.5 text-xs font-semibold', CATEGORY_CLS[cat])}>{cat}</span>
+          <span className="text-xs font-semibold text-slate-600 w-16 truncate" title={x.user_id}>{actorText(x.user_id, users)}</span>
+          <span className="text-xs font-semibold text-slate-800">{actionText(x.action)}</span>
+          <span className="text-xs text-slate-400 truncate flex-1 text-right" title={x.detail}>{x.detail}</span>
+        </div>; })}
       </div>}
     </div>
   </div>;
 }
 
-function Stat({ title, value, sub, tone }: { title: string; value: string; sub?: string; tone?: 'warn' | 'danger' }) { return <div className="card p-4"><div className="muted text-xs">{title}</div><div className={cn('mt-1.5 text-2xl font-black', tone === 'danger' && 'text-rose-600', tone === 'warn' && 'text-amber-600')}>{value}</div>{sub && <div className="mt-0.5 text-xs text-slate-400">{sub}</div>}</div>; }
+const STAT_ACCENTS: Record<string, string> = {
+  blue: 'bg-blue-100 text-blue-600',
+  emerald: 'bg-emerald-100 text-emerald-600',
+  violet: 'bg-violet-100 text-violet-600',
+  amber: 'bg-amber-100 text-amber-600',
+};
+
+// 进度条多色轮换，让排行榜有节奏感（主色仍以蓝为基调）
+const BAR_COLORS = [
+  'from-blue-500 to-indigo-500',
+  'from-violet-500 to-fuchsia-500',
+  'from-sky-500 to-cyan-500',
+  'from-rose-500 to-pink-500',
+  'from-amber-500 to-orange-500',
+  'from-indigo-500 to-blue-500',
+];
+
+function Stat({ title, value, sub, tone, accent = 'blue', icon }: { title: string; value: string; sub?: string; tone?: 'warn' | 'danger'; accent?: 'blue' | 'emerald' | 'violet' | 'amber'; icon?: string }) {
+  return <div className="card flex items-start gap-3 p-4">
+    {icon && <div className={cn('grid h-10 w-10 flex-none place-items-center rounded-xl text-lg', STAT_ACCENTS[accent])}>{icon}</div>}
+    <div className="min-w-0">
+      <div className="muted text-xs">{title}</div>
+      <div className={cn('mt-1 text-2xl font-black', tone === 'danger' ? 'text-rose-600' : tone === 'warn' ? 'text-amber-600' : 'text-slate-900')}>{value}</div>
+      {sub && <div className="mt-0.5 text-xs text-slate-400">{sub}</div>}
+    </div>
+  </div>;
+}
 function Badge({ tone, children }: { tone: 'ok' | 'warn' | 'danger' | 'muted'; children: React.ReactNode }) { return <span className={cn('badge', tone === 'ok' && 'badge-ok', tone === 'warn' && 'badge-warn', tone === 'danger' && 'badge-danger', tone === 'muted' && 'badge-muted')}>{children}</span>; }
 
+// 给新手看的「这一页是干嘛的」说明条
+function PageTip({ children }: { children: React.ReactNode }) {
+  return <div className="page-tip"><span className="page-tip-icon">?</span><div>{children}</div></div>;
+}
+
+// 表头/字段旁的小问号，鼠标悬停显示解释
+function HelpDot({ text }: { text: string }) {
+  return <span className="help-dot" title={text}>?</span>;
+}
+
 function NodesPage(props: { nodes: NodeItem[]; filters: any; setFilters: any; isAdmin: boolean; onDetail: (n: NodeItem)=>void; onEdit: (n: NodeItem)=>void; onConfirm: (n: NodeItem)=>void; onDelete: (n: NodeItem)=>void }) {
-  return <div className="grid gap-5"><Toolbar><input className="input" placeholder="搜索节点 / IP / 系统" value={props.filters.q} onChange={e => props.setFilters((f: any)=>({ ...f, nodes: { ...f.nodes, q: e.target.value } }))} /><select className="input" value={props.filters.status} onChange={e => props.setFilters((f: any)=>({ ...f, nodes: { ...f.nodes, status: e.target.value } }))}><option value="all">全部状态</option><option value="online">在线</option><option value="offline">离线</option></select></Toolbar><div className="table-wrap"><table className="table"><thead><tr><th>节点</th><th>状态</th><th>防火墙</th><th>资源</th><th>端口范围</th><th>最近心跳</th><th>操作</th></tr></thead><tbody>{props.nodes.map(n => { const fw = firewallStatus(n); const m = n.last_metrics || {}; return <tr key={n.id}><td><b>{n.name}</b><div className="muted">{n.hostname || '-'} · {n.os || '-'}/{n.arch || '-'}</div><div className="muted">公网：{n.public_ip || '-'}</div></td><td><Badge tone={online(n) ? 'ok' : 'muted'}>{online(n) ? '在线' : '离线'}</Badge></td><td><Badge tone={fw.tone}>{fw.text}</Badge>{fw.note && <div className="mt-2 text-xs text-amber-700">{fw.note}</div>}{n.firewall_error && <div className="mt-2 text-xs text-rose-600">{n.firewall_error}</div>}</td><td><div className="muted">CPU {Math.round(m.cpu_percent || 0)}%</div><div className="muted">内存 {fmtBytes(m.memory_used)} / {fmtBytes(m.memory_total)}</div><div className="mt-2 h-2 rounded-full bg-slate-100"><i className="block h-full rounded-full bg-blue-500" style={{ width: `${pct(m.memory_used, m.memory_total)}%` }} /></div></td><td>{n.port_range_start || '-'} - {n.port_range_end || '-'}</td><td>{fmtDate(n.last_seen_at)}</td><td><RowActions><button className="btn" onClick={()=>props.onDetail(n)}>详情</button>{props.isAdmin && <><button className="btn" onClick={()=>props.onEdit(n)}>设置</button>{n.firewall_mode==='strict-pending' && <button className="btn btn-primary" onClick={()=>props.onConfirm(n)}>确认严格</button>}<button className="btn btn-danger" onClick={()=>props.onDelete(n)}>删除</button></>}</RowActions></td></tr>; })}</tbody></table></div></div>;
+  return <div className="grid gap-5"><PageTip>“节点”就是你接入的服务器（中转机）。在“节点接入”页面生成命令、到服务器上执行后，它就会出现在这里。下面可以查看每台服务器的在线状态、资源占用和防火墙托管情况。</PageTip><Toolbar><input className="input" placeholder="搜索节点 / IP / 系统" value={props.filters.q} onChange={e => props.setFilters((f: any)=>({ ...f, nodes: { ...f.nodes, q: e.target.value } }))} /><select className="input" value={props.filters.status} onChange={e => props.setFilters((f: any)=>({ ...f, nodes: { ...f.nodes, status: e.target.value } }))}><option value="all">全部状态</option><option value="online">在线</option><option value="offline">离线</option></select></Toolbar><div className="table-wrap"><table className="table"><thead><tr><th>节点</th><th>状态</th><th>防火墙<HelpDot text="是否让面板自动帮这台服务器管理防火墙规则。宽松=只放行转发端口；严格=只保留 SSH 和转发端口，其余入站一律拒绝（更安全，但需手动确认）。" /></th><th>资源<HelpDot text="这台服务器当前的 CPU 和内存占用情况。" /></th><th>端口范围<HelpDot text="允许在这台节点上创建转发规则时使用的监听端口区间，0-0 表示不限制。" /></th><th>最近心跳<HelpDot text="节点最后一次向面板上报状态的时间。长时间没有心跳通常表示离线。" /></th><th>操作</th></tr></thead><tbody>{props.nodes.length === 0 && <tr><td colSpan={7} className="py-8 text-center text-slate-400">暂无节点，请在“节点接入”页面生成接入命令</td></tr>}{props.nodes.map(n => { const fw = firewallStatus(n); const m = n.last_metrics || {}; return <tr key={n.id}><td><b>{n.name}</b><div className="muted">{n.hostname || '-'} · {n.os || '-'}/{n.arch || '-'}</div><div className="muted">公网：{n.public_ip || '-'}</div></td><td><Badge tone={online(n) ? 'ok' : 'muted'}>{online(n) ? '在线' : '离线'}</Badge></td><td><Badge tone={fw.tone}>{fw.text}</Badge>{fw.note && <div className="mt-2 text-xs text-amber-700">{fw.note}</div>}{n.firewall_error && <div className="mt-2 text-xs text-rose-600">{n.firewall_error}</div>}</td><td><div className="muted">CPU {Math.round(m.cpu_percent || 0)}%</div><div className="muted">内存 {fmtBytes(m.memory_used)} / {fmtBytes(m.memory_total)}</div><div className="mt-2 h-2 rounded-full bg-slate-100"><i className="block h-full rounded-full bg-blue-500" style={{ width: `${pct(m.memory_used, m.memory_total)}%` }} /></div></td><td>{n.port_range_start || '-'} - {n.port_range_end || '-'}</td><td>{fmtDate(n.last_seen_at)}</td><td><RowActions><button className="btn" onClick={()=>props.onDetail(n)}>详情</button>{props.isAdmin && <><button className="btn" onClick={()=>props.onEdit(n)}>设置</button>{n.firewall_mode==='strict-pending' && <button className="btn btn-primary" onClick={()=>props.onConfirm(n)}>确认严格</button>}<button className="btn btn-danger" onClick={()=>props.onDelete(n)}>删除</button></>}</RowActions></td></tr>; })}</tbody></table></div></div>;
 }
 
 async function copyText(value: string, toast?: (m: string, t?: Toast['tone']) => void) {
@@ -548,6 +551,7 @@ function RulesPage(props: any) {
   }
 
   return <div className="grid gap-5">
+    <PageTip>一条“转发规则”就是把<b>节点服务器某个端口</b>收到的流量，转发到你指定的<b>目标地址</b>。比如把节点的 <code>:8388</code> 转发到 <code>1.2.3.4:443</code>。用户连接“监听地址”，实际访问的是“目标地址”。</PageTip>
     <div className="toolbar-card card p-4">
       <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
         <div>
@@ -598,9 +602,9 @@ function RulesPage(props: any) {
           <tr>
             <th>规则</th>
             <th>节点 / 用户</th>
-            <th>监听 / 目标</th>
-            <th>状态</th>
-            <th>流量</th>
+            <th>监听 / 目标<HelpDot text="监听地址=用户去连接的地址（节点公网 IP:监听端口）；目标地址=流量最终被转发到的真实服务器地址。点“复制”可一键复制。" /></th>
+            <th>状态<HelpDot text="规则当前的运行情况：运行中=正常转发；已停止/异常=节点未生效或报错；已停用=你手动关闭了它。" /></th>
+            <th>流量<HelpDot text="这条规则已经累计转发的流量，以及你为它设置的流量上限。" /></th>
             <th>操作</th>
           </tr>
         </thead>
@@ -663,11 +667,78 @@ function RulesPage(props: any) {
   </div>;
 }
 
-function TokensPage({ onCreate }: { onCreate: () => void }) { return <div className="card p-6"><h2 className="text-xl font-black">节点接入</h2><p className="mt-2 text-slate-500">生成一次性接入命令，并在节点服务器上执行。</p><button className="btn btn-primary mt-5" onClick={onCreate}>生成接入 Token</button><div className="mt-5 rounded-2xl bg-amber-50 p-4 text-sm text-amber-800">严格防火墙模式会保留 SSH 端口；如需救援，在节点执行 <code>relayguard-agent firewall rescue</code>。</div></div>; }
-function UsersPage({ users, nodes, onNew, onEdit, onDelete }: any) { return <div className="grid gap-5"><button className="btn btn-primary w-fit" onClick={onNew}>新增用户</button><div className="table-wrap"><table className="table"><thead><tr><th>用户</th><th>角色</th><th>规则额度</th><th>流量额度</th><th>端口范围</th><th>状态</th><th>操作</th></tr></thead><tbody>{users.map((u: User)=><tr key={u.id}><td><b>{u.username}</b><div className="muted">{u.id}</div></td><td>{roleText(u.role)}</td><td>{u.rule_limit || '不限'}</td><td>{fmtBytes(u.traffic_used)}{u.traffic_limit ? ` / ${fmtBytes(u.traffic_limit)}` : ' / 不限'}</td><td>{u.port_range_start || '-'} - {u.port_range_end || '-'}</td><td>{u.disabled ? <Badge tone="danger">禁用</Badge> : <Badge tone="ok">正常</Badge>} {u.must_change && <Badge tone="warn">需改密</Badge>}</td><td><RowActions><button className="btn" onClick={()=>onEdit(u)}>编辑</button><button className="btn btn-danger" onClick={()=>onDelete(u)}>删除</button></RowActions></td></tr>)}</tbody></table></div><div className="muted">当前节点数：{nodes.length}</div></div>; }
+function TokensPage({ onCreate }: { onCreate: () => void }) {
+  return <div className="grid gap-5">
+    <PageTip>想把一台新服务器变成转发节点？在这里点“生成接入 Token”，把得到的<b>一行命令</b>复制到那台服务器上执行即可，节点会自动接入面板。Token 只显示一次、用完即失效。</PageTip>
+    <div className="card p-6">
+      <h2 className="text-xl font-black">节点接入</h2>
+      <ol className="mt-4 grid gap-2 text-sm text-slate-600 list-decimal pl-5">
+        <li>点击下方按钮，填写节点名称和有效期，生成接入命令。</li>
+        <li>复制生成的命令，登录到你的服务器（用 root 或 sudo）。</li>
+        <li>把命令粘贴执行，等待安装完成，节点会自动出现在“节点管理”里。</li>
+      </ol>
+      <button className="btn btn-primary mt-5" onClick={onCreate}>生成接入 Token</button>
+      <div className="mt-5 rounded-2xl bg-amber-50 p-4 text-sm text-amber-800">严格防火墙模式会保留 SSH 端口；如不慎被防火墙挡在外面，在节点上执行 <code>relayguard-agent firewall rescue</code> 即可救援。</div>
+    </div>
+  </div>;
+}
+function UsersPage({ users, nodes, onNew, onEdit, onDelete }: any) { return <div className="grid gap-5"><PageTip>这里管理登录面板的账号。普通用户只能看到分配给自己的节点和规则；管理员可以管理全部。可为每个用户限制可用节点、端口范围、规则数量和流量额度。</PageTip><button className="btn btn-primary w-fit" onClick={onNew}>新增用户</button><div className="table-wrap"><table className="table"><thead><tr><th>用户</th><th>角色<HelpDot text="普通用户=只能管理分配给自己的规则；管理员=可管理节点和用户；超级管理员=最高权限。" /></th><th>规则额度<HelpDot text="该用户最多能创建多少条转发规则，“不限”表示没有限制。" /></th><th>流量额度<HelpDot text="该用户已用流量 / 流量上限。超过上限后规则会被限制。" /></th><th>端口范围<HelpDot text="该用户创建规则时可以使用的监听端口区间。" /></th><th>状态</th><th>操作</th></tr></thead><tbody>{users.length === 0 && <tr><td colSpan={7} className="empty">暂无用户</td></tr>}{users.map((u: User)=><tr key={u.id}><td><b>{u.username}</b><div className="hint" title={u.id}>ID：{u.id}</div></td><td>{roleText(u.role)}</td><td>{u.rule_limit || '不限'}</td><td>{fmtBytes(u.traffic_used)}{u.traffic_limit ? ` / ${fmtBytes(u.traffic_limit)}` : ' / 不限'}</td><td>{u.port_range_start || '-'} - {u.port_range_end || '-'}</td><td>{u.disabled ? <Badge tone="danger">禁用</Badge> : <Badge tone="ok">正常</Badge>} {u.must_change && <Badge tone="warn">需改密</Badge>}</td><td><RowActions><button className="btn" onClick={()=>onEdit(u)}>编辑</button><button className="btn btn-danger" onClick={()=>onDelete(u)}>删除</button></RowActions></td></tr>)}</tbody></table></div><div className="muted">当前节点数：{nodes.length}</div></div>; }
 
-function AuditPage() { const [items, setItems] = useState<any[]>([]); const [err, setErr] = useState(''); const [catFilter, setCatFilter] = useState('all'); useEffect(()=>{ api<{items:any[]}>('/api/audit-logs?limit=200').then(d=>setItems(d.items||[])).catch(e=>setErr(e.message)); }, []); function catOf(action: string): { label: string; cls: string } { const map: Record<string,{label:string;cls:string}> = { login: {label:'认证',cls:'bg-purple-100 text-purple-700'}, change_password: {label:'认证',cls:'bg-purple-100 text-purple-700'}, enable_totp: {label:'认证',cls:'bg-purple-100 text-purple-700'}, disable_totp: {label:'认证',cls:'bg-purple-100 text-purple-700'}, logout_other_sessions: {label:'认证',cls:'bg-purple-100 text-purple-700'}, create_user: {label:'用户',cls:'bg-blue-100 text-blue-700'}, update_user: {label:'用户',cls:'bg-blue-100 text-blue-700'}, delete_user: {label:'用户',cls:'bg-blue-100 text-blue-700'}, reset_user_traffic: {label:'用户',cls:'bg-blue-100 text-blue-700'}, create_node_token: {label:'节点',cls:'bg-emerald-100 text-emerald-700'}, update_node: {label:'节点',cls:'bg-emerald-100 text-emerald-700'}, delete_node: {label:'节点',cls:'bg-emerald-100 text-emerald-700'}, register_node: {label:'节点',cls:'bg-emerald-100 text-emerald-700'}, create_rule: {label:'规则',cls:'bg-amber-100 text-amber-700'}, update_rule: {label:'规则',cls:'bg-amber-100 text-amber-700'}, delete_rule: {label:'规则',cls:'bg-amber-100 text-amber-700'}, toggle_rule: {label:'规则',cls:'bg-amber-100 text-amber-700'}, clone_rule: {label:'规则',cls:'bg-amber-100 text-amber-700'}, reset_rule_traffic: {label:'规则',cls:'bg-amber-100 text-amber-700'}, backup: {label:'系统',cls:'bg-slate-200 text-slate-700'}, restore_backup: {label:'系统',cls:'bg-slate-200 text-slate-700'}, update_settings: {label:'系统',cls:'bg-slate-200 text-slate-700'}, reset_admin_password: {label:'系统',cls:'bg-slate-200 text-slate-700'}, connectivity_test: {label:'检测',cls:'bg-rose-100 text-rose-700'}, }; return map[action] || {label:'其他',cls:'bg-slate-100 text-slate-600'}; } const cats = ['all','认证','用户','节点','规则','系统','检测','其他']; const filtered = catFilter === 'all' ? items : items.filter((x:any) => catOf(x.action).label === catFilter); return <div className="grid gap-5"><div className="flex flex-wrap gap-2">{cats.map(c => <button key={c} className={cn('btn text-sm', catFilter === c ? 'btn-primary' : '')} onClick={() => setCatFilter(c)}>{c === 'all' ? '全部' : c}</button>)}<span className="muted self-center text-xs">{filtered.length} 条记录</span></div><div className="table-wrap"><table className="table"><thead><tr><th>时间</th><th>分类</th><th>用户</th><th>动作</th><th>目标</th><th>IP</th><th>详情</th></tr></thead><tbody>{err ? <tr><td colSpan={7} className="text-rose-600">{err}</td></tr> : filtered.length === 0 ? <tr><td colSpan={7} className="text-center text-slate-500">暂无匹配记录</td></tr> : filtered.map((x:any,i:number)=>{ const c = catOf(x.action); return <tr key={i}><td className="whitespace-nowrap text-xs">{fmtDate(x.created_at)}</td><td><span className={cn('rounded-lg px-2 py-0.5 text-xs font-semibold', c.cls)}>{c.label}</span></td><td className="font-mono text-xs max-w-32 truncate" title={x.user_id}>{x.user_id}</td><td className="font-mono text-xs">{x.action}</td><td className="font-mono text-xs max-w-32 truncate" title={x.target}>{x.target}</td><td className="font-mono text-xs">{x.ip}</td><td className="text-xs max-w-xs truncate" title={x.detail}>{x.detail}</td></tr>; })}</tbody></table></div></div>; }
-function BackupPage({ toast, confirm }: any) { const [items, setItems] = useState<BackupItem[]>([]); const load = () => api<{items:BackupItem[]}>('/api/backups').then(d=>setItems(d.items||[])).catch((e: any)=>toast(e.message,'danger')); useEffect(() => { load(); }, []); async function create(){ await api('/api/backups',{method:'POST'}); toast('备份已创建'); load(); } return <div className="grid gap-5"><Toolbar><button className="btn btn-primary" onClick={create}>立即备份</button><button className="btn" onClick={load}>刷新</button></Toolbar><div className="table-wrap"><table className="table"><thead><tr><th>文件</th><th>大小</th><th>创建时间</th><th>操作</th></tr></thead><tbody>{items.map(b=><tr key={b.name}><td className="font-mono">{b.name}</td><td>{fmtBytes(b.size)}</td><td>{fmtDate(b.created_at)}</td><td><button className="btn btn-danger" onClick={()=>confirm('恢复备份', `恢复 ${b.name} 会覆盖当前数据库，恢复前会自动备份当前数据。`, async()=>{ await api(`/api/backups/${encodeURIComponent(b.name)}/restore`, { method:'POST' }); toast('恢复完成'); })}>恢复</button></td></tr>)}</tbody></table></div></div>; }
+const AUDIT_CATEGORY: Record<string, string> = {
+  login: '认证', change_password: '认证', enable_totp: '认证', disable_totp: '认证', logout_other_sessions: '认证',
+  create_user: '用户', update_user: '用户', delete_user: '用户', reset_user_traffic: '用户',
+  create_node_token: '节点', update_node: '节点', delete_node: '节点', register_node: '节点',
+  create_rule: '规则', update_rule: '规则', delete_rule: '规则', toggle_rule: '规则', clone_rule: '规则', reset_rule_traffic: '规则',
+  backup: '系统', restore_backup: '系统', update_settings: '系统', reset_admin_password: '系统',
+  connectivity_test: '检测',
+};
+const CATEGORY_CLS: Record<string, string> = {
+  认证: 'bg-purple-100 text-purple-700', 用户: 'bg-blue-100 text-blue-700', 节点: 'bg-emerald-100 text-emerald-700',
+  规则: 'bg-amber-100 text-amber-700', 系统: 'bg-slate-200 text-slate-700', 检测: 'bg-rose-100 text-rose-700', 其他: 'bg-slate-100 text-slate-600',
+};
+
+function AuditPage({ users, nodes, ruleName }: { users: User[]; nodes: NodeItem[]; ruleName: (id: string) => string | undefined }) {
+  const [items, setItems] = useState<any[]>([]);
+  const [err, setErr] = useState('');
+  const [catFilter, setCatFilter] = useState('all');
+
+  useEffect(() => {
+    api<{ items: any[] }>('/api/audit-logs?limit=200').then(d => setItems(d.items || [])).catch(e => setErr(e.message));
+  }, []);
+
+  const catOf = (action: string) => AUDIT_CATEGORY[action] || '其他';
+  const cats = ['all', '认证', '用户', '节点', '规则', '系统', '检测', '其他'];
+  const filtered = catFilter === 'all' ? items : items.filter((x: any) => catOf(x.action) === catFilter);
+
+  return <div className="grid gap-5">
+    <div className="card flex flex-wrap items-center gap-2 p-4">
+      {cats.map(c => <button key={c} className={cn('btn text-sm', catFilter === c ? 'btn-primary' : '')} onClick={() => setCatFilter(c)}>{c === 'all' ? '全部' : c}</button>)}
+      <span className="muted ml-auto self-center text-xs">{filtered.length} 条记录</span>
+    </div>
+    <div className="table-wrap">
+      <table className="table">
+        <thead><tr><th>时间</th><th>分类</th><th>操作人</th><th>操作</th><th>对象</th><th>来源 IP</th><th>说明</th></tr></thead>
+        <tbody>
+          {err ? <tr><td colSpan={7} className="text-rose-600">{err}</td></tr>
+            : filtered.length === 0 ? <tr><td colSpan={7} className="py-8 text-center text-slate-400">暂无匹配记录</td></tr>
+            : filtered.map((x: any, i: number) => {
+              const cat = catOf(x.action);
+              return <tr key={i}>
+                <td className="whitespace-nowrap text-xs text-slate-500">{fmtDate(x.created_at)}</td>
+                <td><span className={cn('rounded-lg px-2 py-0.5 text-xs font-semibold', CATEGORY_CLS[cat])}>{cat}</span></td>
+                <td className="max-w-32 truncate text-xs font-semibold text-slate-700" title={x.user_id}>{actorText(x.user_id, users)}</td>
+                <td className="whitespace-nowrap text-xs font-semibold text-slate-800">{actionText(x.action)}</td>
+                <td className="max-w-40 truncate text-xs text-slate-600" title={x.target}>{targetText(x.target, { users, nodes, ruleName })}</td>
+                <td className="whitespace-nowrap font-mono text-xs text-slate-500">{x.ip}</td>
+                <td className="max-w-xs truncate text-xs text-slate-500" title={x.detail}>{x.detail || '-'}</td>
+              </tr>;
+            })}
+        </tbody>
+      </table>
+    </div>
+  </div>;
+}
+function BackupPage({ toast, confirm }: any) { const [items, setItems] = useState<BackupItem[]>([]); const load = () => api<{items:BackupItem[]}>('/api/backups').then(d=>setItems(d.items||[])).catch((e: any)=>toast(e.message,'danger')); useEffect(() => { load(); }, []); async function create(){ await api('/api/backups',{method:'POST'}); toast('备份已创建'); load(); } return <div className="grid gap-5"><PageTip>备份会把面板的整个数据库（账号、节点、规则、设置等）打包保存。建议定期“立即备份”；需要时点对应备份的“恢复”即可还原，恢复前系统会自动先备份当前数据。</PageTip><Toolbar><button className="btn btn-primary" onClick={create}>立即备份</button><button className="btn" onClick={load}>刷新</button></Toolbar><div className="table-wrap"><table className="table"><thead><tr><th>文件</th><th>大小</th><th>创建时间</th><th>操作</th></tr></thead><tbody>{items.length === 0 && <tr><td colSpan={4} className="empty">还没有备份，点“立即备份”创建第一个</td></tr>}{items.map(b=><tr key={b.name}><td className="font-mono">{b.name}</td><td>{fmtBytes(b.size)}</td><td>{fmtDate(b.created_at)}</td><td><button className="btn btn-danger" onClick={()=>confirm('恢复备份', `恢复 ${b.name} 会覆盖当前数据库，恢复前会自动备份当前数据。`, async()=>{ await api(`/api/backups/${encodeURIComponent(b.name)}/restore`, { method:'POST' }); toast('恢复完成'); })}>恢复</button></td></tr>)}</tbody></table></div></div>; }
 function AccountPage({ user, setUser, toast, openTotp }: any) { const [sessions, setSessions] = useState<SessionItem[]>([]); const loadSessions = () => api<{items:SessionItem[]}>('/api/account/sessions').then(d=>setSessions(d.items||[])).catch((e:any)=>toast(e.message,'danger')); useEffect(() => { loadSessions(); }, []); async function changePassword(e: React.FormEvent<HTMLFormElement>){ e.preventDefault(); const data = Object.fromEntries(new FormData(e.currentTarget)); const d = await api<{user:User}>('/api/account/password', { method:'POST', body: JSON.stringify(data) }); setUser(d.user); toast('密码已修改'); } return <div className="grid gap-5 lg:grid-cols-2"><form onSubmit={changePassword} className="card grid gap-4 p-5"><h2 className="text-xl font-black">修改密码</h2><label className="label">当前密码<input className="input" type="password" name="old_password" required /></label><label className="label">新密码<input className="input" type="password" name="new_password" required /></label><button className="btn btn-primary">保存新密码</button></form><div className="card p-5"><h2 className="text-xl font-black">两步验证</h2><p className="muted mt-2">当前状态：{user.totp_enabled ? '已启用' : '未启用'}</p><button className="btn mt-4" onClick={openTotp}>{user.totp_enabled ? '管理两步验证' : '启用两步验证'}</button></div><div className="card p-5 lg:col-span-2"><div className="flex justify-between"><h2 className="text-xl font-black">登录会话</h2><button className="btn" onClick={loadSessions}>刷新</button></div><div className="mt-4 grid gap-2">{sessions.map(s=><div key={s.id} className="rounded-2xl bg-slate-50 p-3"><b>{s.ip || '-'}</b><div className="muted">{s.user_agent || '-'}</div><div className="muted">创建：{fmtDate(s.created_at)} · 过期：{fmtDate(s.expires_at)}</div></div>)}</div></div></div>; }
 function SettingsPage({ toast }: any) {
   const [settings, setSettings] = useState<Record<string, string>>({});
@@ -701,14 +772,15 @@ function SettingsPage({ toast }: any) {
 
   const fields: Array<[string, string, string, string?]> = [
     ['site_name', '站点名称', editing.site_name || '', '显示在面板标题和 Agent 安装脚本中'],
-    ['agent_interval', '心跳间隔（秒）', editing.agent_interval || '30', 'Agent 上报心跳的间隔，5-300 秒'],
-    ['session_ttl_hours', '会话有效期（小时）', editing.session_ttl_hours || '72', '登录会话的过期时间，1-8760 小时'],
+    ['agent_interval', '心跳间隔（秒）', editing.agent_interval || '10', 'Agent 上报心跳的间隔，5-300 秒'],
+    ['session_ttl_hours', '会话有效期（小时）', editing.session_ttl_hours || '24', '登录会话的过期时间，1-8760 小时'],
     ['audit_retention_days', '审计日志保留天数', editing.audit_retention_days || '90', '超过保留天数的审计日志会被自动清理，7-3650 天'],
     ['webhook_url', 'Webhook URL', editing.webhook_url || '', '事件通知的 HTTPS URL，留空关闭'],
     ['webhook_secret', 'Webhook 密钥', editing.webhook_secret || '', '用于签名 Webhook 请求的密钥'],
   ];
 
   return <div className="grid gap-5">
+    <PageTip>这里是面板的全局设置。不确定的项保持默认即可；每个输入框下方都有说明。Webhook 用于把重要事件推送到你的服务器，不需要可以留空。</PageTip>
     <div className="card p-6">
       <h2 className="text-xl font-black">系统设置</h2>
       <p className="muted mt-2">配置站点名称、Agent 心跳间隔、会话有效期和 Webhook 通知。仅管理员可修改。</p>

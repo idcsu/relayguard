@@ -6,7 +6,7 @@ services:
     container_name: relayguard-panel
     restart: unless-stopped
     ports:
-      - "7080:7080"
+      - "10026:10026"
     volumes:
       - panel-data:/app/data
     environment:
@@ -14,7 +14,7 @@ services:
       # 首次初始化可指定管理员密码；留空则随机生成并打印到日志
       # - ADMIN_PASSWORD=请改成强密码
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:7080/healthz"]
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:10026/healthz"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -27,7 +27,7 @@ services:
     container_name: relayguard-agent
     restart: unless-stopped
     environment:
-      - RELAYGUARD_PANEL=http://relayguard-panel:7080
+      - RELAYGUARD_PANEL=http://relayguard-panel:10026
       - RELAYGUARD_TOKEN=change-me
       - RELAYGUARD_SSH_PORTS=22
       # - RELAYGUARD_NODE_NAME=节点名称

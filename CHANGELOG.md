@@ -2,6 +2,19 @@
 
 All notable changes to RelayGuard will be documented in this file.
 
+## [0.20.1] - 2026-06-13
+
+### Maintenance
+- 清理仓库：删除重复的 `relayguard/` 旧快照、废弃的 `web/` 与 `web_old/` 前端、提交进仓库的二进制和遗留脚本。
+- 统一前端构建产物路径：只输出到 `internal/panel/webdist`（去掉冗余的 `web/dist` 拷贝），相应精简 `Makefile` 与 `copy-dist.mjs`。
+- 统一监听端口为 `10026`（与安装脚本、README 一致）：二进制默认 `-addr`、docker-compose、`Dockerfile.panel`、systemd 单元、面板内嵌安装脚本同步更新。
+- 前端版本号与面板保持一致（`package.json`、侧边栏不再写死旧版本号）。
+
+### UX（前端可读性 / 轻量优化）
+- 审计日志与仪表盘“最近活动”改为人类可读：动作码翻译成中文、显示用户名（而非原始 ID）、目标列映射成规则名/节点名/用户名，悬停仍可看原始 ID。
+- 节点 / 转发规则 / 节点接入 / 用户 / 备份 / 系统设置等页面增加“这是什么”说明条与字段悬停解释，降低上手门槛。
+- 统一空状态文案、补充键盘聚焦样式，删除前端死代码与无用工具函数。
+
 ## [0.15.0] - 2026-05-14
 
 ### Security
