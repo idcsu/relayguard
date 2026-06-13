@@ -3,10 +3,11 @@
 @tailwind utilities;
 
 :root {
-  color-scheme: light;
-  font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif;
-  background: #f7f8fa;
-  color: #172033;
+  color-scheme: dark;
+  font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --bg: #070a14;
+  background: var(--bg);
+  color: #cbd5e1;
 }
 
 * {
@@ -14,13 +15,19 @@
 }
 
 html {
-  background: #f7f8fa;
+  background: var(--bg);
 }
 
 body {
   margin: 0;
   min-height: 100vh;
-  background: #f7f8fa;
+  background:
+    radial-gradient(900px circle at 12% -8%, rgba(56, 130, 248, 0.18), transparent 60%),
+    radial-gradient(800px circle at 100% 0%, rgba(129, 140, 248, 0.14), transparent 55%),
+    radial-gradient(900px circle at 80% 110%, rgba(45, 212, 191, 0.10), transparent 55%),
+    var(--bg);
+  background-attachment: fixed;
+  color: #cbd5e1;
 }
 
 button,
@@ -30,31 +37,84 @@ textarea {
   font: inherit;
 }
 
+::selection {
+  background: rgba(56, 130, 248, 0.35);
+  color: #fff;
+}
+
+/* 细滚动条，贴合深色主题 */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.16) transparent;
+}
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.14);
+  border-radius: 9999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.24);
+  background-clip: padding-box;
+}
+
+@layer base {
+  code {
+    @apply rounded-md bg-white/10 px-1.5 py-0.5 font-mono text-[0.85em] text-sky-200;
+  }
+}
+
 @layer components {
-  .glass {
-    @apply border border-white/70 bg-white/80 shadow-card backdrop-blur-xl;
-  }
-
+  /* 主面板：玻璃质感卡片 */
   .card {
-    @apply rounded-2xl border border-slate-200/50 bg-white shadow-sm;
+    @apply relative rounded-3xl border border-white/[0.07] bg-white/[0.035] shadow-glass backdrop-blur-xl;
   }
 
+  /* 卡片内的次级容器（取代旧的浅灰小块） */
+  .tile {
+    @apply rounded-2xl border border-white/[0.06] bg-white/[0.03];
+  }
+
+  .glass {
+    @apply border border-white/[0.08] bg-white/[0.04] shadow-glass backdrop-blur-xl;
+  }
+
+  /* 顶部品牌渐变区（仪表盘 Hero） */
   .hero-card {
+    @apply relative overflow-hidden border border-white/[0.08];
     background:
-      radial-gradient(circle at 15% 20%, rgba(59, 130, 246, .28), transparent 26rem),
-      linear-gradient(135deg, #0f1b3a 0%, #15254d 45%, #1e3a8a 100%);
+      radial-gradient(120% 140% at 0% 0%, rgba(56, 130, 248, 0.5), transparent 55%),
+      radial-gradient(120% 140% at 100% 0%, rgba(129, 140, 248, 0.42), transparent 55%),
+      radial-gradient(140% 160% at 80% 120%, rgba(45, 212, 191, 0.32), transparent 55%),
+      linear-gradient(135deg, #0b1228 0%, #0a1024 55%, #0b1430 100%);
+  }
+
+  .login-brand-panel {
+    @apply relative overflow-hidden;
+    background:
+      radial-gradient(120% 120% at 0% 0%, rgba(56, 130, 248, 0.55), transparent 55%),
+      radial-gradient(120% 120% at 100% 100%, rgba(45, 212, 191, 0.4), transparent 55%),
+      linear-gradient(150deg, #0c1430 0%, #0a1024 50%, #0d1838 100%);
   }
 
   .btn {
-    @apply inline-flex min-h-10 items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 shadow-sm transition hover:-translate-y-0.5 hover:border-blue-200 hover:bg-blue-50 hover:text-blue-800 disabled:cursor-not-allowed disabled:opacity-50;
+    @apply inline-flex min-h-10 items-center justify-center gap-2 rounded-xl border border-white/10 bg-white/[0.05] px-4 py-2 text-sm font-semibold text-slate-200 transition hover:-translate-y-0.5 hover:border-white/20 hover:bg-white/[0.09] hover:text-white disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:translate-y-0;
   }
 
   .btn-primary {
-    @apply border-transparent bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-lg shadow-blue-500/20 hover:from-blue-500 hover:to-indigo-500 hover:text-white;
+    @apply border-transparent bg-gradient-to-r from-sky-500 to-indigo-500 text-white shadow-glow hover:from-sky-400 hover:to-indigo-400 hover:text-white;
   }
 
   .btn-danger {
-    @apply border-transparent bg-gradient-to-r from-rose-500 to-red-600 text-white shadow-lg shadow-rose-500/20 hover:from-rose-500 hover:to-red-500 hover:text-white;
+    @apply border-transparent bg-gradient-to-r from-rose-500 to-red-600 text-white shadow-[0_14px_40px_-14px_rgba(244,63,94,0.6)] hover:from-rose-400 hover:to-red-500 hover:text-white;
+  }
+
+  .btn-xs {
+    @apply min-h-8 rounded-lg px-3 py-1 text-xs;
   }
 
   .toolbar-primary {
@@ -62,23 +122,28 @@ textarea {
   }
 
   .input {
-    @apply w-full rounded-2xl border border-slate-200 bg-white/90 px-4 py-2.5 text-sm outline-none transition focus:border-blue-400 focus:ring-4 focus:ring-blue-100;
+    @apply w-full rounded-xl border border-white/10 bg-white/[0.04] px-4 py-2.5 text-sm text-slate-100 outline-none transition placeholder:text-slate-500 focus:border-sky-400/60 focus:bg-white/[0.06] focus:ring-4 focus:ring-sky-500/15;
+  }
+
+  /* 让原生下拉选项在深色下可读 */
+  select.input option {
+    @apply bg-ink-800 text-slate-100;
   }
 
   .label {
-    @apply grid gap-1.5 text-sm font-semibold text-slate-700;
+    @apply grid gap-1.5 text-sm font-semibold text-slate-300;
   }
 
   .muted {
-    @apply text-sm text-slate-500;
+    @apply text-sm text-slate-400;
   }
 
   .toolbar-card {
-    @apply bg-white/90;
+    @apply bg-white/[0.035];
   }
 
   .table-wrap {
-    @apply overflow-hidden rounded-2xl border border-slate-200/50 bg-white shadow-sm;
+    @apply overflow-hidden rounded-3xl border border-white/[0.07] bg-white/[0.025] shadow-glass backdrop-blur-xl;
   }
 
   .table {
@@ -86,82 +151,78 @@ textarea {
   }
 
   .table th {
-    @apply bg-slate-50/90 px-4 py-3 text-xs font-bold uppercase tracking-wider text-slate-500;
+    @apply bg-white/[0.02] px-4 py-3 text-xs font-bold uppercase tracking-wider text-slate-400;
   }
 
   .table td {
-    @apply border-t border-slate-100 px-4 py-3 align-top;
+    @apply border-t border-white/[0.06] px-4 py-3.5 align-top text-slate-300;
   }
 
   .table tbody tr {
-    @apply transition hover:bg-blue-50/40;
+    @apply transition hover:bg-white/[0.035];
   }
 
   .badge {
-    @apply inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-bold;
+    @apply inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-bold ring-1 ring-inset;
   }
 
   .badge-ok {
-    @apply bg-emerald-100 text-emerald-700;
+    @apply bg-emerald-400/10 text-emerald-300 ring-emerald-400/25;
   }
 
   .badge-warn {
-    @apply bg-amber-100 text-amber-700;
+    @apply bg-amber-400/10 text-amber-300 ring-amber-400/25;
   }
 
   .badge-danger {
-    @apply bg-rose-100 text-rose-700;
+    @apply bg-rose-400/10 text-rose-300 ring-rose-400/25;
   }
 
   .badge-muted {
-    @apply bg-slate-100 text-slate-600;
+    @apply bg-white/[0.06] text-slate-300 ring-white/10;
   }
 
   .field-grid {
     @apply grid gap-4 md:grid-cols-2;
   }
 
-  .traffic-card {
-    @apply bg-white/95;
-  }
-}
-
-
-@layer components {
-  .login-brand-panel {
-    background:
-      radial-gradient(circle at 12% 20%, rgba(59, 130, 246, .28), transparent 22rem),
-      linear-gradient(135deg, #0f1b3a 0%, #15254d 52%, #1e3a8a 100%);
-  }
-
   .copy-pill {
-    @apply grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded-2xl border border-slate-200 bg-slate-50/80 px-3 py-2;
+    @apply grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2;
   }
 
-  .btn-xs {
-    @apply min-h-8 rounded-xl px-3 py-1 text-xs;
-  }
-
-  /* 给小白看的「这是什么」说明条 */
+  /* 给新手看的「这是什么」说明条 */
   .page-tip {
-    @apply flex items-start gap-3 rounded-2xl border border-blue-100 bg-blue-50/70 px-4 py-3 text-sm text-blue-900;
+    @apply flex items-start gap-3 rounded-2xl border border-sky-400/20 bg-sky-400/[0.07] px-4 py-3 text-sm text-sky-100;
   }
 
   .page-tip-icon {
-    @apply mt-0.5 grid h-5 w-5 flex-none place-items-center rounded-full bg-blue-500 text-xs font-black text-white;
+    @apply mt-0.5 grid h-5 w-5 flex-none place-items-center rounded-full bg-gradient-to-br from-sky-400 to-indigo-500 text-xs font-black text-white;
   }
 
-  /* 表头/标签旁的小问号，悬停看解释 */
+  /* 表头/字段旁的小问号，悬停看解释 */
   .help-dot {
-    @apply ml-1 inline-grid h-4 w-4 cursor-help place-items-center rounded-full bg-slate-200 text-[10px] font-black text-slate-500 align-middle;
+    @apply ml-1 inline-grid h-4 w-4 cursor-help place-items-center rounded-full bg-white/10 align-middle text-[10px] font-black text-slate-300 ring-1 ring-inset ring-white/10;
   }
 
   .hint {
-    @apply text-xs text-slate-400;
+    @apply text-xs text-slate-500;
   }
 
   .empty {
-    @apply py-10 text-center text-sm text-slate-400;
+    @apply py-10 text-center text-sm text-slate-500;
+  }
+
+  /* 侧边导航项 */
+  .nav-item {
+    @apply relative flex items-center gap-3 rounded-2xl px-4 py-3 text-left text-sm font-bold text-slate-400 transition hover:bg-white/[0.06] hover:text-white;
+  }
+
+  .nav-item-active {
+    @apply bg-white/[0.08] text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.08)];
+  }
+
+  .nav-item-icon {
+    @apply grid h-8 w-8 flex-none place-items-center rounded-xl bg-white/[0.06] text-base text-slate-300 ring-1 ring-inset ring-white/10;
   }
 }
 
@@ -169,6 +230,10 @@ textarea {
 @layer utilities {
   .btn:focus-visible,
   .input:focus-visible {
-    @apply outline-none ring-4 ring-blue-100;
+    @apply outline-none ring-4 ring-sky-500/25;
+  }
+
+  .text-gradient {
+    @apply bg-gradient-to-r from-white via-sky-100 to-indigo-200 bg-clip-text text-transparent;
   }
 }

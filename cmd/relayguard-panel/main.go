@@ -14,7 +14,7 @@ import (
 )
 
 func main() {
-	addr := flag.String("addr", env("RELAYGUARD_ADDR", ":7080"), "监听地址，例如 :7080")
+	addr := flag.String("addr", env("RELAYGUARD_ADDR", ":10026"), "监听地址，例如 :10026")
 	dataDir := flag.String("data", env("RELAYGUARD_DATA", "./data"), "数据目录")
 	adminUser := flag.String("admin-user", env("ADMIN_USER", "admin"), "初始化管理员用户名")
 	adminPassword := flag.String("admin-password", env("ADMIN_PASSWORD", ""), "初始化管理员密码，留空则随机生成")
